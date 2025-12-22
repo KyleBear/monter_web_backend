@@ -10,6 +10,7 @@ from typing import Optional
 from database import get_db
 from models import SettlementAdmin, UsersAdmin, AdvertisementsAdmin
 from utils.time_check import check_edit_time_allowed
+from utils.auth_helpers import get_current_user
 from datetime import date, datetime, timedelta
 
 router = APIRouter()
@@ -208,13 +209,17 @@ async def get_settlement(settlement_id: int, db: Session = Depends(get_db)):
 @router.post("")
 async def create_settlement(
     settlement: SettlementCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """
     정산 로그 생성 API
     """
-    # 오후 4시 30분 이후 수정 차단
-    check_edit_time_allowed()
+    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     # 정산 유형 검증
     valid_types = ["order", "extend", "refund"]
@@ -293,13 +298,17 @@ async def create_settlement(
 async def update_settlement(
     settlement_id: int,
     settlement: SettlementUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """
     정산 로그 수정 API
     """
-    # 오후 4시 30분 이후 수정 차단
-    check_edit_time_allowed()
+    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     # 정산 로그 조회
     stmt = db.query(SettlementAdmin).filter(SettlementAdmin.settlement_id == settlement_id).first()

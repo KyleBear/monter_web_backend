@@ -34,10 +34,10 @@ class VerifyResponse(BaseModel):
     data: Optional[dict] = None
 
 
-# 하드코딩된 계정 (admin, monter)
+# 하드코딩된 슈퍼유저 계정 (users_admin 테이블과 무관하게 로그인 가능)
 HARDCODED_ACCOUNTS = {
     "admin": {
-        "password": "1234",
+        "password": "monter1234",
         "user_id": 0,
         "role": "admin"
     },
@@ -53,7 +53,7 @@ HARDCODED_ACCOUNTS = {
 async def login(request: LoginRequest, db: Session = Depends(get_db)):
     """
     로그인 API
-    - admin/1234, monter/monter 계정은 하드코딩
+    - admin/monter1234, monter/monter 계정은 슈퍼유저로 하드코딩 (users_admin 테이블과 무관)
     - 나머지 계정은 users_admin 테이블에서 조회
     """
     username = request.username
@@ -63,7 +63,7 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
     user_id = None
     role = None
     
-    # 하드코딩된 계정 확인
+    # 하드코딩된 슈퍼유저 계정 확인 (우선 처리)
     if username in HARDCODED_ACCOUNTS:
         account = HARDCODED_ACCOUNTS[username]
         if password != account["password"]:
@@ -71,11 +71,19 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="아이디 또는 비밀번호가 일치하지 않습니다."
             )
+        # 슈퍼유저는 users_admin 테이블 확인 없이 바로 로그인
         user_id = account["user_id"]
         role = account["role"]
     else:
         # 데이터베이스에서 사용자 조회
-        user = db.query(UsersAdmin).filter(UsersAdmin.username == username).first()
+        try:
+            user = db.query(UsersAdmin).filter(UsersAdmin.username == username).first()
+        except Exception as e:
+            # 데이터베이스 연결 오류 시 에러 반환
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"데이터베이스 연결 오류: {str(e)}"
+            )
         
         if not user:
             raise HTTPException(

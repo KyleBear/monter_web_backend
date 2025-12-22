@@ -11,6 +11,7 @@ from database import get_db
 from models import UsersAdmin, AdvertisementsAdmin
 from utils.password import hash_password
 from utils.time_check import check_edit_time_allowed
+from utils.auth_helpers import get_current_user
 from datetime import datetime
 
 router = APIRouter()
@@ -188,12 +189,19 @@ async def get_account(user_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("")
-async def create_account(account: AccountCreate, db: Session = Depends(get_db)):
+async def create_account(
+    account: AccountCreate,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
     """
     계정 생성 API
     """
-    # 오후 4시 30분 이후 수정 차단
-    check_edit_time_allowed()
+    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     # username 중복 체크
     existing_user = db.query(UsersAdmin).filter(UsersAdmin.username == account.username).first()
@@ -274,13 +282,17 @@ async def create_account(account: AccountCreate, db: Session = Depends(get_db)):
 async def update_account(
     user_id: int,
     account: AccountUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """
     계정 수정 API
     """
-    # 오후 4시 30분 이후 수정 차단
-    check_edit_time_allowed()
+    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     # 계정 조회
     user = db.query(UsersAdmin).filter(UsersAdmin.user_id == user_id).first()
@@ -334,15 +346,19 @@ async def update_account(
 @router.delete("")
 async def delete_accounts(
     delete_request: AccountDelete,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """
     계정 삭제 API
     - 여러 계정 일괄 삭제
     - 소프트 삭제 (is_active=False)로 처리
     """
-    # 오후 4시 30분 이후 수정 차단
-    check_edit_time_allowed()
+    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     deleted_count = 0
     not_found_ids = []

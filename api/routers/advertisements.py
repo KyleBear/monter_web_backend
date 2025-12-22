@@ -10,6 +10,7 @@ from typing import Optional, List
 from database import get_db
 from models import AdvertisementsAdmin, UsersAdmin
 from utils.time_check import check_edit_time_allowed
+from utils.auth_helpers import get_current_user
 from datetime import date, datetime, timedelta
 
 router = APIRouter()
@@ -211,13 +212,17 @@ async def get_advertisement(ad_id: int, db: Session = Depends(get_db)):
 @router.post("")
 async def create_advertisement(
     advertisement: AdvertisementCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """
     광고 생성 API
     """
-    # 오후 4시 30분 이후 수정 차단
-    check_edit_time_allowed()
+    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     # 사용자 존재 확인
     user = db.query(UsersAdmin).filter(UsersAdmin.user_id == advertisement.user_id).first()
@@ -270,13 +275,17 @@ async def create_advertisement(
 async def update_advertisement(
     ad_id: int,
     advertisement: AdvertisementUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """
     광고 수정 API
     """
-    # 오후 4시 30분 이후 수정 차단
-    check_edit_time_allowed()
+    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     # 광고 조회
     ad = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == ad_id).first()
@@ -364,15 +373,19 @@ async def update_advertisement(
 @router.delete("")
 async def delete_advertisements(
     delete_request: AdvertisementDelete,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """
     광고 삭제 API
     - 여러 광고 일괄 삭제
     - 하드 삭제 (실제 데이터베이스에서 삭제)
     """
-    # 오후 4시 30분 이후 수정 차단
-    check_edit_time_allowed()
+    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     deleted_count = 0
     not_found_ids = []
@@ -412,15 +425,19 @@ async def delete_advertisements(
 @router.post("/extend")
 async def extend_advertisements(
     extend_request: AdvertisementExtend,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """
     광고 연장 API
     - 여러 광고 일괄 연장
     - end_date에 extend_days 추가
     """
-    # 오후 4시 30분 이후 수정 차단
-    check_edit_time_allowed()
+    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     extended_ads = []
     not_found_ids = []
