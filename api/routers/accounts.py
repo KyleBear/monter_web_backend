@@ -473,9 +473,35 @@ async def create_account(
             detail=f"유효하지 않은 역할입니다. 가능한 역할: {', '.join(valid_roles)}"
         )
     
+    current_username = current_user.get("username")
+    current_role = current_user.get("role")
+    
+    # parent_user_id 자동 설정 (총판사는 parent_user_id가 None이어야 함)
+    final_parent_user_id = account.parent_user_id
+    
+    # 슈퍼유저가 아닌 경우, parent_user_id 자동 설정
+    if current_username not in ["admin", "monter"]:
+        if account.role == "total":
+            # 총판사는 parent_user_id가 None이어야 함
+            final_parent_user_id = None
+        elif account.role == "agency":
+            # 대행사는 총판사의 하위여야 함
+            if current_role == "total":
+                final_parent_user_id = current_user_id
+            elif not final_parent_user_id:
+                # parent_user_id가 명시되지 않았으면 현재 사용자를 parent로 설정
+                final_parent_user_id = current_user_id
+        elif account.role == "advertiser":
+            # 광고주는 대행사의 하위여야 함
+            if current_role == "agency":
+                final_parent_user_id = current_user_id
+            elif not final_parent_user_id:
+                # parent_user_id가 명시되지 않았으면 현재 사용자를 parent로 설정
+                final_parent_user_id = current_user_id
+    
     # parent_user_id 검증
-    if account.role == "agency" and account.parent_user_id:
-        parent = db.query(UsersAdmin).filter(UsersAdmin.user_id == account.parent_user_id).first()
+    if account.role == "agency" and final_parent_user_id:
+        parent = db.query(UsersAdmin).filter(UsersAdmin.user_id == final_parent_user_id).first()
         if not parent:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -486,8 +512,8 @@ async def create_account(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="대행사의 상위 계정은 총판사여야 합니다."
             )
-    elif account.role == "advertiser" and account.parent_user_id:
-        parent = db.query(UsersAdmin).filter(UsersAdmin.user_id == account.parent_user_id).first()
+    elif account.role == "advertiser" and final_parent_user_id:
+        parent = db.query(UsersAdmin).filter(UsersAdmin.user_id == final_parent_user_id).first()
         if not parent:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -498,7 +524,7 @@ async def create_account(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="광고주의 상위 계정은 대행사여야 합니다."
             )
-    elif account.role == "total" and account.parent_user_id:
+    elif account.role == "total" and final_parent_user_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="총판사는 상위 계정을 가질 수 없습니다."
@@ -512,7 +538,7 @@ async def create_account(
         username=account.username,
         password_hash=password_hash,
         role=account.role,
-        parent_user_id=account.parent_user_id,
+        parent_user_id=final_parent_user_id,  # 자동 설정된 parent_user_id 사용
         affiliation=account.affiliation,
         memo=account.memo,
         is_active=True
