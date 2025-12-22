@@ -5,7 +5,7 @@ dbml.sql 스키마를 기반으로 생성
 from sqlalchemy import Column, BigInteger, String, Integer, Float, Boolean, DateTime, Text, Date, ForeignKey, JSON
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
-from db_code.database import Base
+from database import Base
 
 
 # 데이터섹션(IP 그룹) 테이블

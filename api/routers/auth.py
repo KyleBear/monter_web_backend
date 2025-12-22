@@ -7,10 +7,10 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
-from db_code.database import get_db
+from database import get_db
 from models import UsersAdmin
-import hashlib
-from datetime import datetime, timedelta
+from utils.password import verify_password
+from utils.session import create_session, get_session, delete_session
 
 router = APIRouter()
 security = HTTPBearer(auto_error=False)
@@ -34,36 +34,87 @@ class VerifyResponse(BaseModel):
     data: Optional[dict] = None
 
 
-# TODO: 로그인 API 구현
-# - 사용자명과 비밀번호로 인증
-# - 비밀번호 해시 검증
-# - 세션 토큰 생성 및 반환
-# - remember_me 옵션 처리
+# 하드코딩된 계정 (admin, monter)
+HARDCODED_ACCOUNTS = {
+    "admin": {
+        "password": "1234",
+        "user_id": 0,
+        "role": "admin"
+    },
+    "monter": {
+        "password": "monter",
+        "user_id": 1,
+        "role": "admin"
+    }
+}
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(request: LoginRequest, db: Session = Depends(get_db)):
     """
     로그인 API
-    
-    TODO:
-    1. 데이터베이스에서 username으로 사용자 조회
-    2. 비밀번호 해시 검증 (bcrypt 또는 hashlib 사용)
-    3. 인증 성공 시 세션 토큰 생성
-    4. 세션 정보 저장 (Redis 또는 데이터베이스)
-    5. 사용자 정보 반환 (user_id, username, role)
-    6. remember_me 옵션에 따른 세션 만료 시간 설정
-    7. 에러 처리: 잘못된 아이디/비밀번호
+    - admin/1234, monter/monter 계정은 하드코딩
+    - 나머지 계정은 users_admin 테이블에서 조회
     """
-    # 임시 응답 (구현 필요)
+    username = request.username
+    password = request.password
+    remember_me = request.remember_me or False
+    
+    user_id = None
+    role = None
+    
+    # 하드코딩된 계정 확인
+    if username in HARDCODED_ACCOUNTS:
+        account = HARDCODED_ACCOUNTS[username]
+        if password != account["password"]:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="아이디 또는 비밀번호가 일치하지 않습니다."
+            )
+        user_id = account["user_id"]
+        role = account["role"]
+    else:
+        # 데이터베이스에서 사용자 조회
+        user = db.query(UsersAdmin).filter(UsersAdmin.username == username).first()
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="아이디 또는 비밀번호가 일치하지 않습니다."
+            )
+        
+        # 계정 활성화 확인
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="비활성화된 계정입니다."
+            )
+        
+        # 비밀번호 검증
+        if not verify_password(password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="아이디 또는 비밀번호가 일치하지 않습니다."
+            )
+        
+        user_id = user.user_id
+        role = user.role
+    
+    # 세션 토큰 생성
+    session_token = create_session(user_id, username, role, remember_me)
+    
     return {
-        "success": False,
-        "message": "로그인 API 구현 필요",
-        "data": None
+        "success": True,
+        "message": "로그인 성공",
+        "data": {
+            "user_id": user_id,
+            "username": username,
+            "role": role,
+            "session_token": session_token
+        }
     }
 
 
-# TODO: 로그아웃 API 구현
-# - 세션 토큰 무효화
-# - 세션 정보 삭제
 @router.post("/logout")
 async def logout(
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -71,23 +122,28 @@ async def logout(
 ):
     """
     로그아웃 API
-    
-    TODO:
-    1. 요청 헤더에서 세션 토큰 추출
-    2. 세션 토큰 검증
-    3. 세션 정보 삭제 (Redis 또는 데이터베이스)
-    4. 성공 응답 반환
-    5. 에러 처리: 유효하지 않은 토큰
     """
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="인증 토큰이 필요합니다."
+        )
+    
+    token = credentials.credentials
+    deleted = delete_session(token)
+    
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="유효하지 않은 토큰입니다."
+        )
+    
     return {
-        "success": False,
-        "message": "로그아웃 API 구현 필요"
+        "success": True,
+        "message": "로그아웃 성공"
     }
 
 
-# TODO: 세션 확인 API 구현
-# - 세션 토큰 검증
-# - 사용자 정보 반환
 @router.get("/verify", response_model=VerifyResponse)
 async def verify_session(
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -95,16 +151,28 @@ async def verify_session(
 ):
     """
     세션 확인 API
-    
-    TODO:
-    1. 요청 헤더에서 세션 토큰 추출
-    2. 세션 토큰 검증
-    3. 세션에서 사용자 정보 조회
-    4. 사용자 정보 반환 (user_id, username, role)
-    5. 에러 처리: 유효하지 않은 토큰, 만료된 세션
     """
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="인증 토큰이 필요합니다."
+        )
+    
+    token = credentials.credentials
+    session = get_session(token)
+    
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="유효하지 않거나 만료된 토큰입니다."
+        )
+    
     return {
-        "success": False,
-        "data": None
+        "success": True,
+        "data": {
+            "user_id": session["user_id"],
+            "username": session["username"],
+            "role": session["role"]
+        }
     }
 

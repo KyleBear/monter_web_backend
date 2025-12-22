@@ -10,10 +10,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # 데이터베이스 연결 정보 (환경 변수에서 가져오기)
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "mysql+pymysql://user:password@localhost:3306/monter_db"
-)
+# DATABASE_URL이 직접 정의되어 있으면 사용, 없으면 개별 변수들을 조합
+if os.getenv("DATABASE_URL"):
+    DATABASE_URL = os.getenv("DATABASE_URL")
+else:
+    # 개별 변수들로부터 DATABASE_URL 구성
+    db_host = os.getenv("DB_HOST", "localhost")
+    db_port = os.getenv("DB_PORT", "3306")
+    db_user = os.getenv("DB_USER", "user")
+    db_password = os.getenv("DB_PASSWORD", "password")
+    db_name = os.getenv("DB_NAME", "monter_db")
+    
+    DATABASE_URL = f"mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 
 # SQLAlchemy 엔진 생성
 engine = create_engine(

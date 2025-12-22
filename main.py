@@ -26,6 +26,9 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://127.0.0.1:8080",
         # 프론트엔드 주소 추가 가능
+        # 프로덕션 환경 (도메인)
+        "https://re-switch.co.kr",
+        "http://115.68.195.145:3000",
     ],
     allow_credentials=True,
     allow_methods=["*"],

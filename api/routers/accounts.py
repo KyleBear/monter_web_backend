@@ -2,12 +2,14 @@
 계정 관리 API 라우터
 계정 조회, 생성, 수정, 삭제
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func, or_
 from pydantic import BaseModel
 from typing import Optional, List
-from db_code.database import get_db
-from models import UsersAdmin
+from database import get_db
+from models import UsersAdmin, AdvertisementsAdmin
+from utils.password import hash_password
 from datetime import datetime
 
 router = APIRouter()
@@ -35,11 +37,6 @@ class AccountDelete(BaseModel):
     user_ids: List[int]
 
 
-# TODO: 계정 목록 조회 API 구현
-# - 페이지네이션 처리
-# - 검색 기능 (아이디, 소속, 메모)
-# - 역할별 필터링
-# - 통계 정보 포함 (전체, 총판사, 대행사, 광고주 수)
 @router.get("")
 async def get_accounts(
     page: int = Query(1, ge=1),
@@ -51,75 +48,224 @@ async def get_accounts(
 ):
     """
     계정 목록 조회 API
-    
-    TODO:
-    1. 페이지네이션 계산 (offset, limit)
-    2. 검색 조건에 따른 쿼리 필터링
-       - search_type: all/userid/group/memo
-       - search_keyword: 검색어
-       - role: 총판사/대행사/광고주
-    3. 데이터베이스에서 계정 목록 조회
-    4. 각 계정의 통계 정보 계산 (ad_count, active_ad_count)
-    5. 전체 통계 계산 (전체, 총판사, 대행사, 광고주 수)
-    6. 응답 데이터 구성 및 반환
+    - 페이지네이션 처리
+    - 검색 기능 (아이디, 소속, 메모)
+    - 역할별 필터링
+    - 통계 정보 포함
     """
+    # 페이지네이션 계산
+    offset = (page - 1) * limit
+    
+    # 기본 쿼리
+    query = db.query(UsersAdmin)
+    
+    # 역할 필터링
+    if role:
+        query = query.filter(UsersAdmin.role == role)
+    
+    # 검색 필터링
+    if search_keyword:
+        if search_type == "userid":
+            query = query.filter(UsersAdmin.username.contains(search_keyword))
+        elif search_type == "group":
+            query = query.filter(UsersAdmin.affiliation.contains(search_keyword))
+        elif search_type == "memo":
+            query = query.filter(UsersAdmin.memo.contains(search_keyword))
+        elif search_type == "all":
+            query = query.filter(
+                or_(
+                    UsersAdmin.username.contains(search_keyword),
+                    UsersAdmin.affiliation.contains(search_keyword),
+                    UsersAdmin.memo.contains(search_keyword)
+                )
+            )
+    
+    # 전체 개수 조회
+    total = query.count()
+    
+    # 페이지네이션 적용
+    accounts = query.offset(offset).limit(limit).all()
+    
+    # 각 계정의 통계 정보 계산
+    account_list = []
+    for account in accounts:
+        # 광고 수량 계산
+        ad_count = db.query(func.count(AdvertisementsAdmin.ad_id)).filter(
+            AdvertisementsAdmin.user_id == account.user_id
+        ).scalar() or 0
+        
+        # 진행중인 광고 수 계산 (정상 상태)
+        active_ad_count = db.query(func.count(AdvertisementsAdmin.ad_id)).filter(
+            AdvertisementsAdmin.user_id == account.user_id,
+            AdvertisementsAdmin.status == "normal"
+        ).scalar() or 0
+        
+        account_list.append({
+            "user_id": account.user_id,
+            "username": account.username,
+            "role": account.role,
+            "affiliation": account.affiliation or "",
+            "ad_count": ad_count,
+            "active_ad_count": active_ad_count,
+            "memo": account.memo or "",
+            "is_active": account.is_active,
+            "created_at": account.created_at.isoformat() if account.created_at else None
+        })
+    
+    # 전체 통계 계산
+    total_count = db.query(func.count(UsersAdmin.user_id)).scalar() or 0
+    total_seller_count = db.query(func.count(UsersAdmin.user_id)).filter(
+        UsersAdmin.role == "total"
+    ).scalar() or 0
+    agency_count = db.query(func.count(UsersAdmin.user_id)).filter(
+        UsersAdmin.role == "agency"
+    ).scalar() or 0
+    advertiser_count = db.query(func.count(UsersAdmin.user_id)).filter(
+        UsersAdmin.role == "advertiser"
+    ).scalar() or 0
+    
+    total_pages = (total + limit - 1) // limit if total > 0 else 1
+    
     return {
-        "success": False,
-        "message": "계정 목록 조회 API 구현 필요",
-        "data": None
+        "success": True,
+        "data": {
+            "accounts": account_list,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "total_pages": total_pages
+        },
+        "stats": {
+            "total": total_count,
+            "total_seller": total_seller_count,
+            "agency": agency_count,
+            "advertiser": advertiser_count
+        }
     }
 
 
-# TODO: 계정 상세 조회 API 구현
 @router.get("/{user_id}")
 async def get_account(user_id: int, db: Session = Depends(get_db)):
     """
     계정 상세 조회 API
-    
-    TODO:
-    1. user_id로 계정 조회
-    2. 계정이 존재하지 않으면 404 에러
-    3. 계정 정보 반환
     """
+    account = db.query(UsersAdmin).filter(UsersAdmin.user_id == user_id).first()
+    
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="계정을 찾을 수 없습니다."
+        )
+    
+    # 광고 수량 계산
+    ad_count = db.query(func.count(AdvertisementsAdmin.ad_id)).filter(
+        AdvertisementsAdmin.user_id == account.user_id
+    ).scalar() or 0
+    
+    # 진행중인 광고 수 계산
+    active_ad_count = db.query(func.count(AdvertisementsAdmin.ad_id)).filter(
+        AdvertisementsAdmin.user_id == account.user_id,
+        AdvertisementsAdmin.status == "normal"
+    ).scalar() or 0
+    
     return {
-        "success": False,
-        "message": "계정 상세 조회 API 구현 필요",
-        "data": None
+        "success": True,
+        "data": {
+            "user_id": account.user_id,
+            "username": account.username,
+            "role": account.role,
+            "parent_user_id": account.parent_user_id,
+            "affiliation": account.affiliation,
+            "memo": account.memo,
+            "ad_count": ad_count,
+            "active_ad_count": active_ad_count,
+            "is_active": account.is_active,
+            "created_at": account.created_at.isoformat() if account.created_at else None,
+            "updated_at": account.updated_at.isoformat() if account.updated_at else None
+        }
     }
 
 
-# TODO: 계정 생성 API 구현
-# - 중복 아이디 체크
-# - 비밀번호 해시화
-# - 역할별 parent_user_id 검증
-# - 계정 생성 및 반환
 @router.post("")
 async def create_account(account: AccountCreate, db: Session = Depends(get_db)):
     """
     계정 생성 API
-    
-    TODO:
-    1. username 중복 체크
-    2. 비밀번호 해시화 (bcrypt 또는 hashlib)
-    3. role 검증 (총판사/대행사/광고주)
-    4. parent_user_id 검증 (대행사는 총판사, 광고주는 대행사)
-    5. 계정 생성
-    6. 데이터베이스 커밋
-    7. 생성된 계정 정보 반환
-    8. 에러 처리: 중복 아이디, 잘못된 역할/상위 계정
     """
+    # username 중복 체크
+    existing_user = db.query(UsersAdmin).filter(UsersAdmin.username == account.username).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="이미 존재하는 아이디입니다."
+        )
+    
+    # role 검증
+    valid_roles = ["total", "agency", "advertiser"]
+    if account.role not in valid_roles:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"유효하지 않은 역할입니다. 가능한 역할: {', '.join(valid_roles)}"
+        )
+    
+    # parent_user_id 검증
+    if account.role == "agency" and account.parent_user_id:
+        parent = db.query(UsersAdmin).filter(UsersAdmin.user_id == account.parent_user_id).first()
+        if not parent:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="상위 계정을 찾을 수 없습니다."
+            )
+        if parent.role != "total":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="대행사의 상위 계정은 총판사여야 합니다."
+            )
+    elif account.role == "advertiser" and account.parent_user_id:
+        parent = db.query(UsersAdmin).filter(UsersAdmin.user_id == account.parent_user_id).first()
+        if not parent:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="상위 계정을 찾을 수 없습니다."
+            )
+        if parent.role != "agency":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="광고주의 상위 계정은 대행사여야 합니다."
+            )
+    elif account.role == "total" and account.parent_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="총판사는 상위 계정을 가질 수 없습니다."
+        )
+    
+    # 비밀번호 해시화
+    password_hash = hash_password(account.password)
+    
+    # 계정 생성
+    new_account = UsersAdmin(
+        username=account.username,
+        password_hash=password_hash,
+        role=account.role,
+        parent_user_id=account.parent_user_id,
+        affiliation=account.affiliation,
+        memo=account.memo,
+        is_active=True
+    )
+    
+    db.add(new_account)
+    db.commit()
+    db.refresh(new_account)
+    
     return {
-        "success": False,
-        "message": "계정 생성 API 구현 필요",
-        "data": None
+        "success": True,
+        "message": "계정이 생성되었습니다.",
+        "data": {
+            "user_id": new_account.user_id,
+            "username": new_account.username
+        }
     }
 
 
-# TODO: 계정 수정 API 구현
-# - 계정 존재 확인
-# - 비밀번호 변경 시 해시화
-# - 권한 검증 (본인 또는 관리자만 수정 가능)
-# - 계정 정보 업데이트
 @router.put("/{user_id}")
 async def update_account(
     user_id: int,
@@ -128,28 +274,56 @@ async def update_account(
 ):
     """
     계정 수정 API
-    
-    TODO:
-    1. user_id로 계정 조회
-    2. 계정이 존재하지 않으면 404 에러
-    3. 권한 검증 (본인 또는 관리자만 수정 가능)
-    4. 비밀번호 변경 시 해시화
-    5. 계정 정보 업데이트
-    6. 데이터베이스 커밋
-    7. 업데이트된 계정 정보 반환
     """
+    # 계정 조회
+    user = db.query(UsersAdmin).filter(UsersAdmin.user_id == user_id).first()
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="계정을 찾을 수 없습니다."
+        )
+    
+    # 비밀번호 변경
+    if account.password:
+        user.password_hash = hash_password(account.password)
+    
+    # 역할 변경
+    if account.role:
+        valid_roles = ["total", "agency", "advertiser"]
+        if account.role not in valid_roles:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"유효하지 않은 역할입니다. 가능한 역할: {', '.join(valid_roles)}"
+            )
+        user.role = account.role
+    
+    # 소속 변경
+    if account.affiliation is not None:
+        user.affiliation = account.affiliation
+    
+    # 메모 변경
+    if account.memo is not None:
+        user.memo = account.memo
+    
+    # 활성화 상태 변경
+    if account.is_active is not None:
+        user.is_active = account.is_active
+    
+    user.updated_at = datetime.now()
+    
+    db.commit()
+    db.refresh(user)
+    
     return {
-        "success": False,
-        "message": "계정 수정 API 구현 필요",
-        "data": None
+        "success": True,
+        "message": "계정이 수정되었습니다.",
+        "data": {
+            "user_id": user.user_id
+        }
     }
 
 
-# TODO: 계정 삭제 API 구현
-# - 여러 계정 일괄 삭제
-# - 관련 데이터 확인 (광고 등)
-# - 소프트 삭제 또는 하드 삭제 결정
-# - 삭제 처리
 @router.delete("")
 async def delete_accounts(
     delete_request: AccountDelete,
@@ -157,19 +331,47 @@ async def delete_accounts(
 ):
     """
     계정 삭제 API
-    
-    TODO:
-    1. user_ids 배열의 각 계정 조회
-    2. 각 계정의 관련 데이터 확인 (광고, 정산 등)
-    3. 삭제 가능 여부 검증
-    4. 계정 삭제 (소프트 삭제: is_active=False 또는 하드 삭제)
-    5. 데이터베이스 커밋
-    6. 삭제된 계정 수 반환
-    7. 에러 처리: 관련 데이터가 있는 경우
+    - 여러 계정 일괄 삭제
+    - 소프트 삭제 (is_active=False)로 처리
     """
+    deleted_count = 0
+    not_found_ids = []
+    
+    for user_id in delete_request.user_ids:
+        user = db.query(UsersAdmin).filter(UsersAdmin.user_id == user_id).first()
+        
+        if not user:
+            not_found_ids.append(user_id)
+            continue
+        
+        # 관련 광고 확인
+        ad_count = db.query(func.count(AdvertisementsAdmin.ad_id)).filter(
+            AdvertisementsAdmin.user_id == user_id
+        ).scalar() or 0
+        
+        # 소프트 삭제 (is_active=False)
+        user.is_active = False
+        user.updated_at = datetime.now()
+        deleted_count += 1
+    
+    db.commit()
+    
+    if not_found_ids:
+        return {
+            "success": True,
+            "message": f"{deleted_count}개의 계정이 삭제되었습니다. ({len(not_found_ids)}개 계정을 찾을 수 없음)",
+            "data": {
+                "deleted_count": deleted_count,
+                "not_found_ids": not_found_ids
+            }
+        }
+    
     return {
-        "success": False,
-        "message": "계정 삭제 API 구현 필요",
-        "data": None
+        "success": True,
+        "message": f"선택한 {deleted_count}개의 계정이 삭제되었습니다.",
+        "data": {
+            "deleted_count": deleted_count
+        }
     }
 
+# 현재 비활덩인것만 삭제 
