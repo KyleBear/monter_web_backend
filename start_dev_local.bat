@@ -22,7 +22,7 @@ REM 잠시 대기 (백엔드 서버 시작 시간 확보)
 timeout /t 3 /nobreak >nul
 
 REM 프론트엔드 서버 시작 (새 창)
-start "Monter Frontend" cmd /k "cd /d C:\Users\Administrator\Desktop\monter_front\monter_front && npm start"
+start "Monter Frontend" cmd /k "cd /d C:\Users\Administrator\Desktop\monter_front\monter_front && npm run dev"
 
 echo.
 echo Both servers are starting...
