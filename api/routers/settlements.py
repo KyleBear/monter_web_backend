@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from typing import Optional
 from database import get_db
 from models import SettlementAdmin, UsersAdmin, AdvertisementsAdmin
+from utils.time_check import check_edit_time_allowed
 from datetime import date, datetime, timedelta
 
 router = APIRouter()
@@ -212,6 +213,9 @@ async def create_settlement(
     """
     정산 로그 생성 API
     """
+    # 오후 4시 30분 이후 수정 차단
+    check_edit_time_allowed()
+    
     # 정산 유형 검증
     valid_types = ["order", "extend", "refund"]
     if settlement.settlement_type not in valid_types:
@@ -294,6 +298,9 @@ async def update_settlement(
     """
     정산 로그 수정 API
     """
+    # 오후 4시 30분 이후 수정 차단
+    check_edit_time_allowed()
+    
     # 정산 로그 조회
     stmt = db.query(SettlementAdmin).filter(SettlementAdmin.settlement_id == settlement_id).first()
     

@@ -10,6 +10,7 @@ from typing import Optional, List
 from database import get_db
 from models import UsersAdmin, AdvertisementsAdmin
 from utils.password import hash_password
+from utils.time_check import check_edit_time_allowed
 from datetime import datetime
 
 router = APIRouter()
@@ -191,6 +192,9 @@ async def create_account(account: AccountCreate, db: Session = Depends(get_db)):
     """
     계정 생성 API
     """
+    # 오후 4시 30분 이후 수정 차단
+    check_edit_time_allowed()
+    
     # username 중복 체크
     existing_user = db.query(UsersAdmin).filter(UsersAdmin.username == account.username).first()
     if existing_user:
@@ -275,6 +279,9 @@ async def update_account(
     """
     계정 수정 API
     """
+    # 오후 4시 30분 이후 수정 차단
+    check_edit_time_allowed()
+    
     # 계정 조회
     user = db.query(UsersAdmin).filter(UsersAdmin.user_id == user_id).first()
     
@@ -334,6 +341,9 @@ async def delete_accounts(
     - 여러 계정 일괄 삭제
     - 소프트 삭제 (is_active=False)로 처리
     """
+    # 오후 4시 30분 이후 수정 차단
+    check_edit_time_allowed()
+    
     deleted_count = 0
     not_found_ids = []
     

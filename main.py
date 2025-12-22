@@ -36,10 +36,10 @@ app.add_middleware(
 )
 
 # API 라우터 등록
-app.include_router(auth.router, prefix="/api/auth", tags=["인증"])
-app.include_router(accounts.router, prefix="/api/accounts", tags=["계정 관리"])
-app.include_router(advertisements.router, prefix="/api/advertisements", tags=["광고 관리"])
-app.include_router(settlements.router, prefix="/api/settlements", tags=["정산 로그"])
+app.include_router(auth.router, prefix="/auth", tags=["인증"])
+app.include_router(accounts.router, prefix="/accounts", tags=["계정 관리"])
+app.include_router(advertisements.router, prefix="/advertisements", tags=["광고 관리"])
+app.include_router(settlements.router, prefix="/settlements", tags=["정산 로그"])
 
 
 @app.get("/")

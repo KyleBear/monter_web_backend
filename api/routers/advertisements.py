@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from database import get_db
 from models import AdvertisementsAdmin, UsersAdmin
+from utils.time_check import check_edit_time_allowed
 from datetime import date, datetime, timedelta
 
 router = APIRouter()
@@ -215,6 +216,9 @@ async def create_advertisement(
     """
     광고 생성 API
     """
+    # 오후 4시 30분 이후 수정 차단
+    check_edit_time_allowed()
+    
     # 사용자 존재 확인
     user = db.query(UsersAdmin).filter(UsersAdmin.user_id == advertisement.user_id).first()
     if not user:
@@ -271,6 +275,9 @@ async def update_advertisement(
     """
     광고 수정 API
     """
+    # 오후 4시 30분 이후 수정 차단
+    check_edit_time_allowed()
+    
     # 광고 조회
     ad = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == ad_id).first()
     
@@ -364,6 +371,9 @@ async def delete_advertisements(
     - 여러 광고 일괄 삭제
     - 하드 삭제 (실제 데이터베이스에서 삭제)
     """
+    # 오후 4시 30분 이후 수정 차단
+    check_edit_time_allowed()
+    
     deleted_count = 0
     not_found_ids = []
     
@@ -409,6 +419,9 @@ async def extend_advertisements(
     - 여러 광고 일괄 연장
     - end_date에 extend_days 추가
     """
+    # 오후 4시 30분 이후 수정 차단
+    check_edit_time_allowed()
+    
     extended_ads = []
     not_found_ids = []
     ended_ads = []
