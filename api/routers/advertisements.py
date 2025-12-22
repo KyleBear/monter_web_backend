@@ -661,10 +661,10 @@ async def extend_advertisements(
                 not_found_ids.append(ad_id)
                 continue
             
-        # 권한 체크 (총판사/대행사는 하위 계정의 광고도 연장 가능)
-        if not _check_advertisement_ownership(ad, current_user, db):
-            unauthorized_ids.append(ad_id)
-            continue
+            # 권한 체크 (총판사/대행사는 하위 계정의 광고도 연장 가능)
+            if not _check_advertisement_ownership(ad, current_user, db):
+                unauthorized_ids.append(ad_id)
+                continue
             
             # 이미 종료된 광고는 연장 불가
             if ad.status == "ended":
