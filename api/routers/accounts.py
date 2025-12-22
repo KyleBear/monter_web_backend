@@ -4,7 +4,7 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, and_
 from pydantic import BaseModel
 from typing import Optional, List
 from database import get_db
@@ -39,92 +39,188 @@ class AccountDelete(BaseModel):
     user_ids: List[int]
 
 
+# @router.get("")
+# async def get_accounts(
+#     page: int = Query(1, ge=1),
+#     limit: int = Query(50, ge=1, le=1000),
+#     search_type: str = Query("all"),
+#     search_keyword: Optional[str] = Query(None),
+#     role: Optional[str] = Query(None),
+#     db: Session = Depends(get_db)
+# ):
+#     """
+#     계정 목록 조회 API
+#     - 페이지네이션 처리
+#     - 검색 기능 (아이디, 소속, 메모)
+#     - 역할별 필터링
+#     - 통계 정보 포함
+#     """
+#     # 페이지네이션 계산
+#     offset = (page - 1) * limit
+    
+#     # 기본 쿼리
+#     query = db.query(UsersAdmin)
+    
+#     # 역할 필터링
+#     if role:
+#         query = query.filter(UsersAdmin.role == role)
+    
+#     # 검색 필터링
+#     if search_keyword:
+#         if search_type == "userid":
+#             query = query.filter(UsersAdmin.username.contains(search_keyword))
+#         elif search_type == "group":
+#             query = query.filter(UsersAdmin.affiliation.contains(search_keyword))
+#         elif search_type == "memo":
+#             query = query.filter(UsersAdmin.memo.contains(search_keyword))
+#         elif search_type == "all":
+#             query = query.filter(
+#                 or_(
+#                     UsersAdmin.username.contains(search_keyword),
+#                     UsersAdmin.affiliation.contains(search_keyword),
+#                     UsersAdmin.memo.contains(search_keyword)
+#                 )
+#             )
+    
+#     # 전체 개수 조회
+#     total = query.count()
+    
+#     # 페이지네이션 적용
+#     accounts = query.offset(offset).limit(limit).all()
+    
+#     # 각 계정의 통계 정보 계산
+#     account_list = []
+#     for account in accounts:
+#         # 광고 수량 계산
+#         ad_count = db.query(func.count(AdvertisementsAdmin.ad_id)).filter(
+#             AdvertisementsAdmin.user_id == account.user_id
+#         ).scalar() or 0
+        
+#         # 진행중인 광고 수 계산 (정상 상태)
+#         active_ad_count = db.query(func.count(AdvertisementsAdmin.ad_id)).filter(
+#             AdvertisementsAdmin.user_id == account.user_id,
+#             AdvertisementsAdmin.status == "normal"
+#         ).scalar() or 0
+        
+#         account_list.append({
+#             "user_id": account.user_id,
+#             "username": account.username,
+#             "role": account.role,
+#             "affiliation": account.affiliation or "",
+#             "ad_count": ad_count,
+#             "active_ad_count": active_ad_count,
+#             "memo": account.memo or "",
+#             "is_active": account.is_active,
+#             "created_at": account.created_at.isoformat() if account.created_at else None
+#         })
+    
+#     # 전체 통계 계산
+#     total_count = db.query(func.count(UsersAdmin.user_id)).scalar() or 0
+#     total_seller_count = db.query(func.count(UsersAdmin.user_id)).filter(
+#         UsersAdmin.role == "total"
+#     ).scalar() or 0
+#     agency_count = db.query(func.count(UsersAdmin.user_id)).filter(
+#         UsersAdmin.role == "agency"
+#     ).scalar() or 0
+#     advertiser_count = db.query(func.count(UsersAdmin.user_id)).filter(
+#         UsersAdmin.role == "advertiser"
+#     ).scalar() or 0
+    
+#     total_pages = (total + limit - 1) // limit if total > 0 else 1
+    
+#     return {
+#         "success": True,
+#         "data": {
+#             "accounts": account_list,
+#             "total": total,
+#             "page": page,
+#             "limit": limit,
+#             "total_pages": total_pages
+#         },
+#         "stats": {
+#             "total": total_count,
+#             "total_seller": total_seller_count,
+#             "agency": agency_count,
+#             "advertiser": advertiser_count
+#         }
+#     }
 @router.get("")
 async def get_accounts(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=1000),
-    search_type: str = Query("all"),
-    search_keyword: Optional[str] = Query(None),
+    username: Optional[str] = Query(None),
+    keyword: Optional[str] = Query(None),
+    affiliation: Optional[str] = Query(None),
+    memo: Optional[str] = Query(None),
     role: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     계정 목록 조회 API
-    - 페이지네이션 처리
-    - 검색 기능 (아이디, 소속, 메모)
-    - 역할별 필터링
-    - 통계 정보 포함
-    """
-    # 페이지네이션 계산
-    offset = (page - 1) * limit
+    - 페이지네이션 지원
+    - 검색 기능 (username, affiliation, memo)
+    - 권한 기반 필터링 (화면 시작 시부터 적용)
     
+    권한별 조회 범위:
+    - Admin/Monter: 모든 계정 조회
+    - Total (총판사): 자신 + 자신이 직접 생성한 대행사 + 그 대행사들의 광고주
+    - Agency (대행사): 자신 + 자신이 직접 생성한 광고주만
+    - Advertiser (광고주): 자신만
+    """
     # 기본 쿼리
     query = db.query(UsersAdmin)
+    
+    # 권한에 따른 조회 범위 필터링 (가장 먼저 적용 - 화면 시작 시부터)
+    query = _apply_account_permission_filter(query, current_user, db)
     
     # 역할 필터링
     if role:
         query = query.filter(UsersAdmin.role == role)
     
-    # 검색 필터링
-    if search_keyword:
-        if search_type == "userid":
-            query = query.filter(UsersAdmin.username.contains(search_keyword))
-        elif search_type == "group":
-            query = query.filter(UsersAdmin.affiliation.contains(search_keyword))
-        elif search_type == "memo":
-            query = query.filter(UsersAdmin.memo.contains(search_keyword))
-        elif search_type == "all":
-            query = query.filter(
-                or_(
-                    UsersAdmin.username.contains(search_keyword),
-                    UsersAdmin.affiliation.contains(search_keyword),
-                    UsersAdmin.memo.contains(search_keyword)
-                )
+    # 검색 조건 추가
+    if username:
+        query = query.filter(UsersAdmin.username.contains(username))
+    if keyword:
+        query = query.filter(
+            or_(
+                UsersAdmin.username.contains(keyword),
+                UsersAdmin.affiliation.contains(keyword),
+                UsersAdmin.memo.contains(keyword)
             )
+        )
+    if affiliation:
+        query = query.filter(UsersAdmin.affiliation.contains(affiliation))
+    if memo:
+        query = query.filter(UsersAdmin.memo.contains(memo))
     
-    # 전체 개수 조회
+    # 전체 개수 조회 (페이지네이션 전)
     total = query.count()
     
     # 페이지네이션 적용
+    offset = (page - 1) * limit
     accounts = query.offset(offset).limit(limit).all()
     
-    # 각 계정의 통계 정보 계산
+    # 통계 계산 (조회된 계정 기준)
+    stats = {
+        "total": total,
+        "distributor": sum(1 for a in accounts if a.role == "total"),
+        "agency": sum(1 for a in accounts if a.role == "agency"),
+        "advertiser": sum(1 for a in accounts if a.role == "advertiser")
+    }
+    
+    # 간단한 정보만 반환 (상세 정보는 /detail 사용)
     account_list = []
     for account in accounts:
-        # 광고 수량 계산
-        ad_count = db.query(func.count(AdvertisementsAdmin.ad_id)).filter(
-            AdvertisementsAdmin.user_id == account.user_id
-        ).scalar() or 0
-        
-        # 진행중인 광고 수 계산 (정상 상태)
-        active_ad_count = db.query(func.count(AdvertisementsAdmin.ad_id)).filter(
-            AdvertisementsAdmin.user_id == account.user_id,
-            AdvertisementsAdmin.status == "normal"
-        ).scalar() or 0
-        
         account_list.append({
             "user_id": account.user_id,
             "username": account.username,
             "role": account.role,
             "affiliation": account.affiliation or "",
-            "ad_count": ad_count,
-            "active_ad_count": active_ad_count,
             "memo": account.memo or "",
             "is_active": account.is_active,
             "created_at": account.created_at.isoformat() if account.created_at else None
         })
-    
-    # 전체 통계 계산
-    total_count = db.query(func.count(UsersAdmin.user_id)).scalar() or 0
-    total_seller_count = db.query(func.count(UsersAdmin.user_id)).filter(
-        UsersAdmin.role == "total"
-    ).scalar() or 0
-    agency_count = db.query(func.count(UsersAdmin.user_id)).filter(
-        UsersAdmin.role == "agency"
-    ).scalar() or 0
-    advertiser_count = db.query(func.count(UsersAdmin.user_id)).filter(
-        UsersAdmin.role == "advertiser"
-    ).scalar() or 0
     
     total_pages = (total + limit - 1) // limit if total > 0 else 1
     
@@ -137,28 +233,126 @@ async def get_accounts(
             "limit": limit,
             "total_pages": total_pages
         },
-        "stats": {
-            "total": total_count,
-            "total_seller": total_seller_count,
-            "agency": agency_count,
-            "advertiser": advertiser_count
-        }
+        "stats": stats
     }
 
-
-@router.get("/{user_id}")
-async def get_account(user_id: int, db: Session = Depends(get_db)):
+def _apply_account_permission_filter(
+    query,
+    current_user: dict,
+    db: Session
+):
     """
-    계정 상세 조회 API
+    계정 조회 권한에 따른 필터링 적용
+    화면 시작 시부터 권한 체크를 적용하기 위한 공통 함수
     """
-    account = db.query(UsersAdmin).filter(UsersAdmin.user_id == user_id).first()
+    current_username = current_user.get("username")
+    current_role = current_user.get("role")
+    current_user_id = current_user.get("user_id")
     
-    if not account:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="계정을 찾을 수 없습니다."
+    # 슈퍼유저는 모든 계정 조회 가능
+    if current_username in ["admin", "monter"]:
+        return query  # 필터링 없음
+    
+    if current_role == "total":  # 총판사
+        # 자신 + 직접 하위 대행사 + 그 대행사들의 광고주
+        direct_agencies = db.query(UsersAdmin.user_id).filter(
+            UsersAdmin.parent_user_id == current_user_id,
+            UsersAdmin.role == "agency"
+        ).all()
+        agency_ids = [agency[0] for agency in direct_agencies]
+        
+        filter_conditions = [
+            UsersAdmin.user_id == current_user_id,  # 자신
+            UsersAdmin.parent_user_id == current_user_id,  # 직접 하위 (대행사)
+        ]
+        
+        # 간접 하위 (대행사의 광고주) - agency_ids가 있을 때만 추가
+        if agency_ids:
+            filter_conditions.append(UsersAdmin.parent_user_id.in_(agency_ids))
+        
+        return query.filter(or_(*filter_conditions))
+    
+    elif current_role == "agency":  # 대행사
+        # 자신 + 직접 하위 광고주만
+        return query.filter(
+            or_(
+                UsersAdmin.user_id == current_user_id,  # 자신
+                and_(
+                    UsersAdmin.parent_user_id == current_user_id,
+                    UsersAdmin.role == "advertiser"
+                )  # 직접 하위 (광고주)
+            )
         )
     
+    elif current_role == "advertiser":  # 광고주
+        # 자신만 조회
+        return query.filter(UsersAdmin.user_id == current_user_id)
+    
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="권한이 없습니다."
+        )
+
+
+def _check_account_access_permission(
+    account: UsersAdmin,
+    current_user: dict,
+    db: Session
+) -> bool:
+    """
+    계정 조회 권한 체크 (단일 계정용)
+    Returns: True if access allowed, False otherwise
+    """
+    current_username = current_user.get("username")
+    current_role = current_user.get("role")
+    current_user_id = current_user.get("user_id")
+    
+    # 슈퍼유저는 모든 계정 조회 가능
+    if current_username in ["admin", "monter"]:
+        return True
+    
+    if current_role == "total":  # 총판사
+        # 자신 + 직접 하위 대행사 + 그 대행사들의 광고주
+        if account.user_id == current_user_id:
+            return True
+        
+        # 직접 하위 (대행사)
+        if account.parent_user_id == current_user_id:
+            return True
+        
+        # 간접 하위 (대행사의 광고주)
+        direct_agencies = db.query(UsersAdmin.user_id).filter(
+            UsersAdmin.parent_user_id == current_user_id,
+            UsersAdmin.role == "agency"
+        ).all()
+        agency_ids = [agency[0] for agency in direct_agencies]
+        if account.parent_user_id in agency_ids:
+            return True
+        
+        return False
+    
+    elif current_role == "agency":  # 대행사
+        # 자신 + 직접 하위 광고주만
+        if account.user_id == current_user_id:
+            return True
+        
+        if account.parent_user_id == current_user_id and account.role == "advertiser":
+            return True
+        
+        return False
+    
+    elif current_role == "advertiser":  # 광고주
+        # 자신만 조회 가능
+        return account.user_id == current_user_id
+    
+    return False
+
+
+def _get_account_stats(account: UsersAdmin, db: Session) -> dict:
+    """
+    계정 통계 정보 계산
+    """
     # 광고 수량 계산
     ad_count = db.query(func.count(AdvertisementsAdmin.ad_id)).filter(
         AdvertisementsAdmin.user_id == account.user_id
@@ -171,6 +365,66 @@ async def get_account(user_id: int, db: Session = Depends(get_db)):
     ).scalar() or 0
     
     return {
+        "ad_count": ad_count,
+        "active_ad_count": active_ad_count
+    }
+
+
+@router.get("/detail")
+async def get_account_detail(
+    username: Optional[str] = Query(None, description="사용자명으로 검색 (기본값)"),
+    affiliation: Optional[str] = Query(None, description="소속으로 검색"),
+    memo: Optional[str] = Query(None, description="메모로 검색"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    계정 상세 조회 API
+    - 기본적으로 username 기반으로 검색
+    - username, affiliation, memo로 검색 가능
+    - 권한에 따라 조회 가능한 계정만 반환 (화면 시작 시부터 적용)
+    
+    검색 우선순위: username > affiliation > memo
+    """
+    # 검색 조건 구성
+    query = db.query(UsersAdmin)
+    
+    # 권한에 따른 조회 범위 필터링 (가장 먼저 적용 - 화면 시작 시부터)
+    query = _apply_account_permission_filter(query, current_user, db)
+    
+    # 검색 조건 추가 (우선순위: username > affiliation > memo)
+    if username:
+        query = query.filter(UsersAdmin.username == username)
+    elif affiliation:
+        query = query.filter(UsersAdmin.affiliation.contains(affiliation))
+    elif memo:
+        query = query.filter(UsersAdmin.memo.contains(memo))
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="검색 조건을 하나 이상 제공해야 합니다. (username, affiliation, memo 중 하나)"
+        )
+    
+    # 계정 조회 (첫 번째 결과만)
+    account = query.first()
+    
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="계정을 찾을 수 없거나 조회 권한이 없습니다."
+        )
+    
+    # 권한 재확인 (추가 안전장치)
+    if not _check_account_access_permission(account, current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="해당 계정을 조회할 권한이 없습니다."
+        )
+    
+    # 통계 정보 계산
+    stats = _get_account_stats(account, db)
+    
+    return {
         "success": True,
         "data": {
             "user_id": account.user_id,
@@ -179,8 +433,8 @@ async def get_account(user_id: int, db: Session = Depends(get_db)):
             "parent_user_id": account.parent_user_id,
             "affiliation": account.affiliation,
             "memo": account.memo,
-            "ad_count": ad_count,
-            "active_ad_count": active_ad_count,
+            "ad_count": stats["ad_count"],
+            "active_ad_count": stats["active_ad_count"],
             "is_active": account.is_active,
             "created_at": account.created_at.isoformat() if account.created_at else None,
             "updated_at": account.updated_at.isoformat() if account.updated_at else None

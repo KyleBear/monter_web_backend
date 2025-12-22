@@ -1,57 +1,112 @@
 """
 정산 로그 API 라우터
-정산 로그 조회, 생성, 수정
+정산 로그 조회 (시간별 조회)
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from sqlalchemy import func
-from pydantic import BaseModel
+from sqlalchemy import func, or_, and_
 from typing import Optional
 from database import get_db
 from models import SettlementAdmin, UsersAdmin, AdvertisementsAdmin
-from utils.time_check import check_edit_time_allowed
 from utils.auth_helpers import get_current_user
 from datetime import date, datetime, timedelta
 
 router = APIRouter()
 
 
-# 요청/응답 모델
-class SettlementCreate(BaseModel):
-    settlement_type: str  # order/extend/refund
-    agency_user_id: Optional[int] = None
-    advertiser_user_id: Optional[int] = None
-    ad_id: Optional[int] = None
-    quantity: int
-    period_start: date
-    period_end: date
-    start_date: date
-
-
-class SettlementUpdate(BaseModel):
-    settlement_type: Optional[str] = None
-    quantity: Optional[int] = None
-    period_start: Optional[date] = None
-    period_end: Optional[date] = None
-    start_date: Optional[date] = None
+def _apply_settlement_permission_filter(
+    query,
+    current_user: dict,
+    db: Session
+):
+    """
+    정산 로그 조회 권한에 따른 필터링 적용
+    계급구조와 소속 기반 필터링
+    - 총판사: 자신 + 직접 하위 대행사 + 그 대행사들의 광고주가 등록한 광고의 정산 로그
+    - 대행사: 자신 + 직접 하위 광고주가 등록한 광고의 정산 로그
+    - 광고주: 자신이 등록한 광고의 정산 로그만
+    """
+    current_username = current_user.get("username")
+    current_role = current_user.get("role")
+    current_user_id = current_user.get("user_id")
+    
+    # 슈퍼유저는 모든 정산 로그 조회 가능
+    if current_username in ["admin", "monter"]:
+        return query  # 필터링 없음
+    
+    if current_role == "total":  # 총판사
+        # 자신 + 직접 하위 대행사 + 그 대행사들의 광고주가 등록한 광고의 정산 로그
+        direct_agencies = db.query(UsersAdmin.user_id).filter(
+            UsersAdmin.parent_user_id == current_user_id,
+            UsersAdmin.role == "agency"
+        ).all()
+        agency_ids = [agency[0] for agency in direct_agencies]
+        
+        # 조회 가능한 광고주 ID 목록 구성
+        allowed_advertiser_ids = [current_user_id]  # 자신
+        
+        # 직접 하위 대행사 (대행사가 광고를 등록한 경우)
+        if agency_ids:
+            allowed_advertiser_ids.extend(agency_ids)
+        
+        # 간접 하위 (대행사의 광고주)
+        if agency_ids:
+            advertiser_ids = db.query(UsersAdmin.user_id).filter(
+                UsersAdmin.parent_user_id.in_(agency_ids),
+                UsersAdmin.role == "advertiser"
+            ).all()
+            advertiser_id_list = [adv[0] for adv in advertiser_ids]
+            if advertiser_id_list:
+                allowed_advertiser_ids.extend(advertiser_id_list)
+        
+        return query.filter(SettlementAdmin.advertiser_user_id.in_(allowed_advertiser_ids))
+    
+    elif current_role == "agency":  # 대행사
+        # 자신 + 직접 하위 광고주가 등록한 광고의 정산 로그만
+        # 직접 하위 광고주 목록 조회
+        advertiser_ids = db.query(UsersAdmin.user_id).filter(
+            UsersAdmin.parent_user_id == current_user_id,
+            UsersAdmin.role == "advertiser"
+        ).all()
+        advertiser_id_list = [adv[0] for adv in advertiser_ids]
+        
+        # 조회 가능한 광고주 ID 목록 구성
+        allowed_advertiser_ids = [current_user_id]  # 자신
+        
+        if advertiser_id_list:
+            allowed_advertiser_ids.extend(advertiser_id_list)
+        
+        return query.filter(SettlementAdmin.advertiser_user_id.in_(allowed_advertiser_ids))
+    
+    elif current_role == "advertiser":  # 광고주
+        # 자신이 등록한 광고의 정산 로그만 조회
+        return query.filter(SettlementAdmin.advertiser_user_id == current_user_id)
+    
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="권한이 없습니다."
+        )
 
 
 @router.get("")
 async def get_settlements(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1),
-    start_date: Optional[date] = Query(None),
-    end_date: Optional[date] = Query(None),
+    start_datetime: Optional[datetime] = Query(None, description="시작 시간 (YYYY-MM-DDTHH:mm:ss)"),
+    end_datetime: Optional[datetime] = Query(None, description="종료 시간 (YYYY-MM-DDTHH:mm:ss)"),
     settlement_type: Optional[str] = Query(None),
     agency_user_id: Optional[int] = Query(None),
     advertiser_user_id: Optional[int] = Query(None),
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    정산 로그 목록 조회 API
+    정산 로그 시간별 조회 API
     - 페이지네이션 처리 (50/100/1000개씩 보기)
-    - 날짜 범위 필터링
+    - 시간 범위 필터링 (created_at 기준)
     - 정산 유형별 필터링
+    - 계급구조와 소속 기반 필터링 (화면 시작 시부터 적용)
     - 통계 정보 포함
     """
     # 페이지네이션 계산
@@ -60,11 +115,14 @@ async def get_settlements(
     # 기본 쿼리
     query = db.query(SettlementAdmin)
     
-    # 날짜 범위 필터링 (start_date 기준)
-    if start_date:
-        query = query.filter(SettlementAdmin.start_date >= start_date)
-    if end_date:
-        query = query.filter(SettlementAdmin.start_date <= end_date)
+    # 권한에 따른 조회 범위 필터링 (가장 먼저 적용 - 화면 시작 시부터)
+    query = _apply_settlement_permission_filter(query, current_user, db)
+    
+    # 시간 범위 필터링 (created_at 기준)
+    if start_datetime:
+        query = query.filter(SettlementAdmin.created_at >= start_datetime)
+    if end_datetime:
+        query = query.filter(SettlementAdmin.created_at <= end_datetime)
     
     # 정산 유형 필터링
     if settlement_type:
@@ -115,22 +173,26 @@ async def get_settlements(
             "start_date": settlement.start_date.isoformat() if settlement.start_date else None
         })
     
-    # 통계 계산
+    # 통계 계산 (권한 범위 내에서만)
     stats_query = db.query(SettlementAdmin)
     
-    # 날짜 범위 필터링 적용
-    if start_date:
-        stats_query = stats_query.filter(SettlementAdmin.start_date >= start_date)
-    if end_date:
-        stats_query = stats_query.filter(SettlementAdmin.start_date <= end_date)
+    # 권한에 따른 조회 범위 필터링 적용
+    stats_query = _apply_settlement_permission_filter(stats_query, current_user, db)
     
-    # 조회 기간 일수 계산
-    if start_date and end_date:
-        period_days = (end_date - start_date).days + 1
-    elif start_date:
-        period_days = (date.today() - start_date).days + 1
-    elif end_date:
-        period_days = (end_date - date.today()).days + 1
+    # 시간 범위 필터링 적용
+    if start_datetime:
+        stats_query = stats_query.filter(SettlementAdmin.created_at >= start_datetime)
+    if end_datetime:
+        stats_query = stats_query.filter(SettlementAdmin.created_at <= end_datetime)
+    
+    # 조회 기간 일수 계산 (start_date 기준)
+    if start_datetime and end_datetime:
+        # created_at의 날짜 범위로 계산
+        period_days = (end_datetime.date() - start_datetime.date()).days + 1
+    elif start_datetime:
+        period_days = (date.today() - start_datetime.date()).days + 1
+    elif end_datetime:
+        period_days = (end_datetime.date() - date.today()).days + 1
     else:
         period_days = 0
     
@@ -171,197 +233,3 @@ async def get_settlements(
             "total_days": total_days
         }
     }
-
-
-@router.get("/{settlement_id}")
-async def get_settlement(settlement_id: int, db: Session = Depends(get_db)):
-    """
-    정산 로그 상세 조회 API
-    """
-    settlement = db.query(SettlementAdmin).filter(
-        SettlementAdmin.settlement_id == settlement_id
-    ).first()
-    
-    if not settlement:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="정산 로그를 찾을 수 없습니다."
-        )
-    
-    return {
-        "success": True,
-        "data": {
-            "settlement_id": settlement.settlement_id,
-            "settlement_type": settlement.settlement_type,
-            "agency_user_id": settlement.agency_user_id,
-            "advertiser_user_id": settlement.advertiser_user_id,
-            "ad_id": settlement.ad_id,
-            "quantity": settlement.quantity,
-            "period_start": settlement.period_start.isoformat() if settlement.period_start else None,
-            "period_end": settlement.period_end.isoformat() if settlement.period_end else None,
-            "total_days": settlement.total_days,
-            "created_at": settlement.created_at.isoformat() if settlement.created_at else None,
-            "start_date": settlement.start_date.isoformat() if settlement.start_date else None
-        }
-    }
-
-
-@router.post("")
-async def create_settlement(
-    settlement: SettlementCreate,
-    db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    정산 로그 생성 API
-    """
-    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
-    check_edit_time_allowed(
-        username=current_user.get("username"),
-        user_role=current_user.get("role")
-    )
-    
-    # 정산 유형 검증
-    valid_types = ["order", "extend", "refund"]
-    if settlement.settlement_type not in valid_types:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"유효하지 않은 정산 유형입니다. 가능한 유형: {', '.join(valid_types)}"
-        )
-    
-    # 대행사 존재 확인
-    if settlement.agency_user_id:
-        agency = db.query(UsersAdmin).filter(UsersAdmin.user_id == settlement.agency_user_id).first()
-        if not agency:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="대행사 계정을 찾을 수 없습니다."
-            )
-    
-    # 광고주 존재 확인
-    if settlement.advertiser_user_id:
-        advertiser = db.query(UsersAdmin).filter(UsersAdmin.user_id == settlement.advertiser_user_id).first()
-        if not advertiser:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="광고주 계정을 찾을 수 없습니다."
-            )
-    
-    # 광고 존재 확인
-    if settlement.ad_id:
-        ad = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == settlement.ad_id).first()
-        if not ad:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="광고를 찾을 수 없습니다."
-            )
-    
-    # 날짜 유효성 검증
-    if settlement.period_start >= settlement.period_end:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="기간 시작일은 기간 종료일보다 이전이어야 합니다."
-        )
-    
-    # total_days 계산
-    delta = settlement.period_end - settlement.period_start
-    total_days = delta.days + 1  # 시작일과 종료일 포함
-    
-    # 정산 로그 생성
-    new_settlement = SettlementAdmin(
-        settlement_type=settlement.settlement_type,
-        agency_user_id=settlement.agency_user_id,
-        advertiser_user_id=settlement.advertiser_user_id,
-        ad_id=settlement.ad_id,
-        quantity=settlement.quantity,
-        period_start=settlement.period_start,
-        period_end=settlement.period_end,
-        total_days=total_days,
-        start_date=settlement.start_date
-    )
-    
-    db.add(new_settlement)
-    db.commit()
-    db.refresh(new_settlement)
-    
-    return {
-        "success": True,
-        "message": "정산 로그가 생성되었습니다.",
-        "data": {
-            "settlement_id": new_settlement.settlement_id,
-            "total_days": new_settlement.total_days
-        }
-    }
-
-
-@router.put("/{settlement_id}")
-async def update_settlement(
-    settlement_id: int,
-    settlement: SettlementUpdate,
-    db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    정산 로그 수정 API
-    """
-    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
-    check_edit_time_allowed(
-        username=current_user.get("username"),
-        user_role=current_user.get("role")
-    )
-    
-    # 정산 로그 조회
-    stmt = db.query(SettlementAdmin).filter(SettlementAdmin.settlement_id == settlement_id).first()
-    
-    if not stmt:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="정산 로그를 찾을 수 없습니다."
-        )
-    
-    # 정산 유형 변경
-    if settlement.settlement_type:
-        valid_types = ["order", "extend", "refund"]
-        if settlement.settlement_type not in valid_types:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"유효하지 않은 정산 유형입니다. 가능한 유형: {', '.join(valid_types)}"
-            )
-        stmt.settlement_type = settlement.settlement_type
-    
-    # 수량 변경
-    if settlement.quantity is not None:
-        stmt.quantity = settlement.quantity
-    
-    # 날짜 변경
-    period_start = settlement.period_start if settlement.period_start else stmt.period_start
-    period_end = settlement.period_end if settlement.period_end else stmt.period_end
-    
-    if settlement.period_start or settlement.period_end:
-        if period_start >= period_end:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="기간 시작일은 기간 종료일보다 이전이어야 합니다."
-            )
-        stmt.period_start = period_start
-        stmt.period_end = period_end
-        
-        # total_days 재계산
-        delta = period_end - period_start
-        stmt.total_days = delta.days + 1
-    
-    # 시작일 변경
-    if settlement.start_date:
-        stmt.start_date = settlement.start_date
-    
-    db.commit()
-    db.refresh(stmt)
-    
-    return {
-        "success": True,
-        "message": "정산 로그가 수정되었습니다.",
-        "data": {
-            "settlement_id": stmt.settlement_id
-        }
-    }
-
