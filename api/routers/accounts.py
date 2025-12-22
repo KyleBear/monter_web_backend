@@ -39,111 +39,6 @@ class AccountDelete(BaseModel):
     user_ids: List[int]
 
 
-# @router.get("")
-# async def get_accounts(
-#     page: int = Query(1, ge=1),
-#     limit: int = Query(50, ge=1, le=1000),
-#     search_type: str = Query("all"),
-#     search_keyword: Optional[str] = Query(None),
-#     role: Optional[str] = Query(None),
-#     db: Session = Depends(get_db)
-# ):
-#     """
-#     계정 목록 조회 API
-#     - 페이지네이션 처리
-#     - 검색 기능 (아이디, 소속, 메모)
-#     - 역할별 필터링
-#     - 통계 정보 포함
-#     """
-#     # 페이지네이션 계산
-#     offset = (page - 1) * limit
-    
-#     # 기본 쿼리
-#     query = db.query(UsersAdmin)
-    
-#     # 역할 필터링
-#     if role:
-#         query = query.filter(UsersAdmin.role == role)
-    
-#     # 검색 필터링
-#     if search_keyword:
-#         if search_type == "userid":
-#             query = query.filter(UsersAdmin.username.contains(search_keyword))
-#         elif search_type == "group":
-#             query = query.filter(UsersAdmin.affiliation.contains(search_keyword))
-#         elif search_type == "memo":
-#             query = query.filter(UsersAdmin.memo.contains(search_keyword))
-#         elif search_type == "all":
-#             query = query.filter(
-#                 or_(
-#                     UsersAdmin.username.contains(search_keyword),
-#                     UsersAdmin.affiliation.contains(search_keyword),
-#                     UsersAdmin.memo.contains(search_keyword)
-#                 )
-#             )
-    
-#     # 전체 개수 조회
-#     total = query.count()
-    
-#     # 페이지네이션 적용
-#     accounts = query.offset(offset).limit(limit).all()
-    
-#     # 각 계정의 통계 정보 계산
-#     account_list = []
-#     for account in accounts:
-#         # 광고 수량 계산
-#         ad_count = db.query(func.count(AdvertisementsAdmin.ad_id)).filter(
-#             AdvertisementsAdmin.user_id == account.user_id
-#         ).scalar() or 0
-        
-#         # 진행중인 광고 수 계산 (정상 상태)
-#         active_ad_count = db.query(func.count(AdvertisementsAdmin.ad_id)).filter(
-#             AdvertisementsAdmin.user_id == account.user_id,
-#             AdvertisementsAdmin.status == "normal"
-#         ).scalar() or 0
-        
-#         account_list.append({
-#             "user_id": account.user_id,
-#             "username": account.username,
-#             "role": account.role,
-#             "affiliation": account.affiliation or "",
-#             "ad_count": ad_count,
-#             "active_ad_count": active_ad_count,
-#             "memo": account.memo or "",
-#             "is_active": account.is_active,
-#             "created_at": account.created_at.isoformat() if account.created_at else None
-#         })
-    
-#     # 전체 통계 계산
-#     total_count = db.query(func.count(UsersAdmin.user_id)).scalar() or 0
-#     total_seller_count = db.query(func.count(UsersAdmin.user_id)).filter(
-#         UsersAdmin.role == "total"
-#     ).scalar() or 0
-#     agency_count = db.query(func.count(UsersAdmin.user_id)).filter(
-#         UsersAdmin.role == "agency"
-#     ).scalar() or 0
-#     advertiser_count = db.query(func.count(UsersAdmin.user_id)).filter(
-#         UsersAdmin.role == "advertiser"
-#     ).scalar() or 0
-    
-#     total_pages = (total + limit - 1) // limit if total > 0 else 1
-    
-#     return {
-#         "success": True,
-#         "data": {
-#             "accounts": account_list,
-#             "total": total,
-#             "page": page,
-#             "limit": limit,
-#             "total_pages": total_pages
-#         },
-#         "stats": {
-#             "total": total_count,
-#             "total_seller": total_seller_count,
-#             "agency": agency_count,
-#             "advertiser": advertiser_count
-#         }
-#     }
 @router.get("")
 async def get_accounts(
     page: int = Query(1, ge=1),
@@ -243,27 +138,45 @@ def _apply_account_permission_filter(
 ):
     """
     계정 조회 권한에 따른 필터링 적용
-    화면 시작 시부터 권한 체크를 적용하기 위한 공통 함수
+    username 기반으로 실제 user_id 조회 후 필터링
     """
     current_username = current_user.get("username")
     current_role = current_user.get("role")
-    current_user_id = current_user.get("user_id")
+    session_user_id = current_user.get("user_id")  # 세션의 user_id (참고용)
     
     # 슈퍼유저는 모든 계정 조회 가능
     if current_username in ["admin", "monter"]:
         return query  # 필터링 없음
     
-    if current_role == "total":  # 총판사
+    # username으로 실제 user_id 조회 (세션의 user_id 대신)
+    actual_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+    if not actual_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="사용자 정보를 찾을 수 없습니다."
+        )
+    
+    actual_user_id = actual_user.user_id
+    actual_role = actual_user.role
+    
+    # 세션의 role과 실제 role이 다르면 에러
+    if actual_role != current_role:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="권한 정보가 일치하지 않습니다. 다시 로그인해주세요."
+        )
+    
+    if actual_role == "total":  # 총판사
         # 자신 + 직접 하위 대행사 + 그 대행사들의 광고주
         direct_agencies = db.query(UsersAdmin.user_id).filter(
-            UsersAdmin.parent_user_id == current_user_id,
+            UsersAdmin.parent_user_id == actual_user_id,
             UsersAdmin.role == "agency"
         ).all()
         agency_ids = [agency[0] for agency in direct_agencies]
         
         filter_conditions = [
-            UsersAdmin.user_id == current_user_id,  # 자신
-            UsersAdmin.parent_user_id == current_user_id,  # 직접 하위 (대행사)
+            UsersAdmin.user_id == actual_user_id,  # 자신
+            UsersAdmin.parent_user_id == actual_user_id,  # 직접 하위 (대행사)
         ]
         
         # 간접 하위 (대행사의 광고주) - agency_ids가 있을 때만 추가
@@ -272,21 +185,21 @@ def _apply_account_permission_filter(
         
         return query.filter(or_(*filter_conditions))
     
-    elif current_role == "agency":  # 대행사
+    elif actual_role == "agency":  # 대행사
         # 자신 + 직접 하위 광고주만
         return query.filter(
             or_(
-                UsersAdmin.user_id == current_user_id,  # 자신
+                UsersAdmin.user_id == actual_user_id,  # 자신
                 and_(
-                    UsersAdmin.parent_user_id == current_user_id,
+                    UsersAdmin.parent_user_id == actual_user_id,
                     UsersAdmin.role == "advertiser"
                 )  # 직접 하위 (광고주)
             )
         )
     
-    elif current_role == "advertiser":  # 광고주
+    elif actual_role == "advertiser":  # 광고주
         # 자신만 조회
-        return query.filter(UsersAdmin.user_id == current_user_id)
+        return query.filter(UsersAdmin.user_id == actual_user_id)
     
     else:
         raise HTTPException(

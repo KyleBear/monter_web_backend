@@ -12,12 +12,6 @@ security = HTTPBearer(auto_error=False)
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """
     현재 로그인한 사용자 정보 가져오기
-    
-    Returns:
-        dict: 사용자 정보 (user_id, username, role)
-    
-    Raises:
-        HTTPException: 인증되지 않은 경우
     """
     if not credentials:
         raise HTTPException(
@@ -34,8 +28,16 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
             detail="유효하지 않거나 만료된 토큰입니다."
         )
     
+    # 세션의 user_id 검증
+    user_id = session.get("user_id")
+    if user_id is None or user_id < 0:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="유효하지 않은 세션 정보입니다."
+        )
+    
     return {
-        "user_id": session["user_id"],
+        "user_id": user_id,
         "username": session["username"],
         "role": session["role"]
     }

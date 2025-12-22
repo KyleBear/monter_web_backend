@@ -21,29 +21,42 @@ def _apply_settlement_permission_filter(
 ):
     """
     정산 로그 조회 권한에 따른 필터링 적용
-    계급구조와 소속 기반 필터링
-    - 총판사: 자신 + 직접 하위 대행사 + 그 대행사들의 광고주가 등록한 광고의 정산 로그
-    - 대행사: 자신 + 직접 하위 광고주가 등록한 광고의 정산 로그
-    - 광고주: 자신이 등록한 광고의 정산 로그만
+    username 기반으로 실제 user_id 조회 후 필터링
     """
     current_username = current_user.get("username")
     current_role = current_user.get("role")
-    current_user_id = current_user.get("user_id")
     
     # 슈퍼유저는 모든 정산 로그 조회 가능
     if current_username in ["admin", "monter"]:
         return query  # 필터링 없음
     
-    if current_role == "total":  # 총판사
+    # username으로 실제 user_id 조회
+    actual_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+    if not actual_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="사용자 정보를 찾을 수 없습니다."
+        )
+    
+    actual_user_id = actual_user.user_id
+    actual_role = actual_user.role
+    
+    if actual_role != current_role:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="권한 정보가 일치하지 않습니다. 다시 로그인해주세요."
+        )
+    
+    if actual_role == "total":  # 총판사
         # 자신 + 직접 하위 대행사 + 그 대행사들의 광고주가 등록한 광고의 정산 로그
         direct_agencies = db.query(UsersAdmin.user_id).filter(
-            UsersAdmin.parent_user_id == current_user_id,
+            UsersAdmin.parent_user_id == actual_user_id,
             UsersAdmin.role == "agency"
         ).all()
         agency_ids = [agency[0] for agency in direct_agencies]
         
         # 조회 가능한 광고주 ID 목록 구성
-        allowed_advertiser_ids = [current_user_id]  # 자신
+        allowed_advertiser_ids = [actual_user_id]  # 자신
         
         # 직접 하위 대행사 (대행사가 광고를 등록한 경우)
         if agency_ids:
@@ -61,26 +74,25 @@ def _apply_settlement_permission_filter(
         
         return query.filter(SettlementAdmin.advertiser_user_id.in_(allowed_advertiser_ids))
     
-    elif current_role == "agency":  # 대행사
+    elif actual_role == "agency":  # 대행사
         # 자신 + 직접 하위 광고주가 등록한 광고의 정산 로그만
-        # 직접 하위 광고주 목록 조회
         advertiser_ids = db.query(UsersAdmin.user_id).filter(
-            UsersAdmin.parent_user_id == current_user_id,
+            UsersAdmin.parent_user_id == actual_user_id,
             UsersAdmin.role == "advertiser"
         ).all()
         advertiser_id_list = [adv[0] for adv in advertiser_ids]
         
         # 조회 가능한 광고주 ID 목록 구성
-        allowed_advertiser_ids = [current_user_id]  # 자신
+        allowed_advertiser_ids = [actual_user_id]  # 자신
         
         if advertiser_id_list:
             allowed_advertiser_ids.extend(advertiser_id_list)
         
         return query.filter(SettlementAdmin.advertiser_user_id.in_(allowed_advertiser_ids))
     
-    elif current_role == "advertiser":  # 광고주
+    elif actual_role == "advertiser":  # 광고주
         # 자신이 등록한 광고의 정산 로그만 조회
-        return query.filter(SettlementAdmin.advertiser_user_id == current_user_id)
+        return query.filter(SettlementAdmin.advertiser_user_id == actual_user_id)
     
     else:
         raise HTTPException(

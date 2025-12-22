@@ -53,12 +53,17 @@ HARDCODED_ACCOUNTS = {
 async def login(request: LoginRequest, db: Session = Depends(get_db)):
     """
     로그인 API
-    - admin/monter1234, monter/monter 계정은 슈퍼유저로 하드코딩 (users_admin 테이블과 무관)
-    - 나머지 계정은 users_admin 테이블에서 조회
     """
-    username = request.username
-    password = request.password
+    username = request.username.strip() if request.username else ""
+    password = request.password.strip() if request.password else ""
     remember_me = request.remember_me or False
+    
+    # 빈 값 체크
+    if not username or not password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="아이디와 비밀번호를 입력해주세요."
+        )
     
     user_id = None
     role = None
@@ -79,7 +84,6 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
         try:
             user = db.query(UsersAdmin).filter(UsersAdmin.username == username).first()
         except Exception as e:
-            # 데이터베이스 연결 오류 시 에러 반환
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"데이터베이스 연결 오류: {str(e)}"
@@ -99,23 +103,43 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
             )
         
         # 비밀번호 검증
+        if not user.password_hash:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="비밀번호 정보가 없습니다. 관리자에게 문의하세요."
+            )
+        
         if not verify_password(password, user.password_hash):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="아이디 또는 비밀번호가 일치하지 않습니다."
             )
         
+        # 데이터베이스에서 조회한 실제 user_id 사용 (중요!)
         user_id = user.user_id
         role = user.role
+        
+        # 디버깅: 실제 user_id 확인
+        print(f"[DEBUG] Login - Username: {username}, DB user_id: {user_id}, Role: {role}")
+    
+    # user_id 검증 (None이거나 0보다 작으면 에러)
+    if user_id is None or user_id < 0:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="사용자 ID를 가져올 수 없습니다."
+        )
     
     # 세션 토큰 생성
     session_token = create_session(user_id, username, role, remember_me)
+    
+    # 디버깅: 세션에 저장된 user_id 확인
+    print(f"[DEBUG] Session created - user_id: {user_id}, username: {username}, role: {role}")
     
     return {
         "success": True,
         "message": "로그인 성공",
         "data": {
-            "user_id": user_id,
+            "user_id": user_id,  # 실제 DB의 user_id 반환
             "username": username,
             "role": role,
             "session_token": session_token
@@ -175,10 +199,18 @@ async def verify_session(
             detail="유효하지 않거나 만료된 토큰입니다."
         )
     
+    # 세션의 user_id 검증
+    user_id = session.get("user_id")
+    if user_id is None or user_id < 0:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="유효하지 않은 세션 정보입니다."
+        )
+    
     return {
         "success": True,
         "data": {
-            "user_id": session["user_id"],
+            "user_id": user_id,
             "username": session["username"],
             "role": session["role"]
         }

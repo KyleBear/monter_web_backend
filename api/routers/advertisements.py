@@ -59,27 +59,43 @@ def _apply_advertisement_permission_filter(
 ):
     """
     광고 조회 권한에 따른 필터링 적용
-    계정 조회 로직과 동일하게 적용
+    username 기반으로 실제 user_id 조회 후 필터링
     """
     current_username = current_user.get("username")
     current_role = current_user.get("role")
-    current_user_id = current_user.get("user_id")
     
     # 슈퍼유저는 모든 광고 조회 가능
     if current_username in ["admin", "monter"]:
         return query  # 필터링 없음
     
-    if current_role == "total":  # 총판사
+    # username으로 실제 user_id 조회
+    actual_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+    if not actual_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="사용자 정보를 찾을 수 없습니다."
+        )
+    
+    actual_user_id = actual_user.user_id
+    actual_role = actual_user.role
+    
+    if actual_role != current_role:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="권한 정보가 일치하지 않습니다. 다시 로그인해주세요."
+        )
+    
+    if actual_role == "total":  # 총판사
         # 자신 + 직접 하위 대행사 + 그 대행사들의 광고주가 등록한 광고
         direct_agencies = db.query(UsersAdmin.user_id).filter(
-            UsersAdmin.parent_user_id == current_user_id,
+            UsersAdmin.parent_user_id == actual_user_id,
             UsersAdmin.role == "agency"
         ).all()
         agency_ids = [agency[0] for agency in direct_agencies]
         
         filter_conditions = [
-            AdvertisementsAdmin.user_id == current_user_id,  # 자신
-            UsersAdmin.parent_user_id == current_user_id,  # 직접 하위 (대행사)
+            AdvertisementsAdmin.user_id == actual_user_id,  # 자신
+            UsersAdmin.parent_user_id == actual_user_id,  # 직접 하위 (대행사)
         ]
         
         # 간접 하위 (대행사의 광고주) - agency_ids가 있을 때만 추가
@@ -88,21 +104,21 @@ def _apply_advertisement_permission_filter(
         
         return query.filter(or_(*filter_conditions))
     
-    elif current_role == "agency":  # 대행사
+    elif actual_role == "agency":  # 대행사
         # 자신 + 직접 하위 광고주가 등록한 광고만
         return query.filter(
             or_(
-                AdvertisementsAdmin.user_id == current_user_id,  # 자신
+                AdvertisementsAdmin.user_id == actual_user_id,  # 자신
                 and_(
-                    UsersAdmin.parent_user_id == current_user_id,
+                    UsersAdmin.parent_user_id == actual_user_id,
                     UsersAdmin.role == "advertiser"
                 )  # 직접 하위 (광고주)
             )
         )
     
-    elif current_role == "advertiser":  # 광고주
+    elif actual_role == "advertiser":  # 광고주
         # 자신이 등록한 광고만 조회
-        return query.filter(AdvertisementsAdmin.user_id == current_user_id)
+        return query.filter(AdvertisementsAdmin.user_id == actual_user_id)
     
     else:
         raise HTTPException(
@@ -117,12 +133,9 @@ def _check_advertisement_ownership(
     db: Session
 ) -> bool:
     """
-    광고 소유권 체크 (등록/수정/삭제 시 사용)
-    - 총판사: 자신 + 직접 하위 대행사 + 그 대행사들의 광고주가 등록한 광고 수정 가능
-    - 대행사: 자신 + 직접 하위 광고주가 등록한 광고 수정 가능
-    - 광고주: 자신이 등록한 광고만 수정 가능
+    광고 소유권 체크
+    username 기반으로 실제 user_id 조회 후 체크
     """
-    current_user_id = current_user.get("user_id")
     current_username = current_user.get("username")
     current_role = current_user.get("role")
     
@@ -130,23 +143,31 @@ def _check_advertisement_ownership(
     if current_username in ["admin", "monter"]:
         return True
     
+    # username으로 실제 user_id 조회
+    actual_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+    if not actual_user:
+        return False
+    
+    actual_user_id = actual_user.user_id
+    actual_role = actual_user.role
+    
+    # 자신이 등록한 광고는 항상 수정 가능
+    if ad.user_id == actual_user_id:
+        return True
+    
     # 광고주 정보 조회
     advertiser = db.query(UsersAdmin).filter(UsersAdmin.user_id == ad.user_id).first()
     if not advertiser:
         return False
     
-    # 자신이 등록한 광고는 항상 수정 가능
-    if ad.user_id == current_user_id:
-        return True
-    
-    if current_role == "total":  # 총판사
+    if actual_role == "total":  # 총판사
         # 직접 하위 대행사가 등록한 광고
-        if advertiser.parent_user_id == current_user_id and advertiser.role == "agency":
+        if advertiser.parent_user_id == actual_user_id and advertiser.role == "agency":
             return True
         
         # 간접 하위 (대행사의 광고주)가 등록한 광고
         direct_agencies = db.query(UsersAdmin.user_id).filter(
-            UsersAdmin.parent_user_id == current_user_id,
+            UsersAdmin.parent_user_id == actual_user_id,
             UsersAdmin.role == "agency"
         ).all()
         agency_ids = [agency[0] for agency in direct_agencies]
@@ -155,16 +176,16 @@ def _check_advertisement_ownership(
         
         return False
     
-    elif current_role == "agency":  # 대행사
+    elif actual_role == "agency":  # 대행사
         # 직접 하위 광고주가 등록한 광고만 수정 가능
-        if advertiser.parent_user_id == current_user_id and advertiser.role == "advertiser":
+        if advertiser.parent_user_id == actual_user_id and advertiser.role == "advertiser":
             return True
         
         return False
     
-    elif current_role == "advertiser":  # 광고주
+    elif actual_role == "advertiser":  # 광고주
         # 자신이 등록한 광고만 수정 가능
-        return ad.user_id == current_user_id
+        return ad.user_id == actual_user_id
     
     return False
 
