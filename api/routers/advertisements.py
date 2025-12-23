@@ -394,12 +394,30 @@ async def create_advertisement(
         user_role=current_user.get("role")
     )
     
-    current_user_id = current_user.get("user_id")
     current_username = current_user.get("username")
+    current_role = current_user.get("role")
+    
+    # username으로 실제 user_id 조회
+    actual_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+    if not actual_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="사용자 정보를 찾을 수 없습니다."
+        )
+    
+    actual_user_id = actual_user.user_id
+    actual_role = actual_user.role
+    
+    # 세션의 role과 실제 role이 다르면 에러
+    if actual_role != current_role:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="권한 정보가 일치하지 않습니다. 다시 로그인해주세요."
+        )
     
     # 슈퍼유저가 아니면 자신의 user_id만 사용 가능
     if current_username not in ["admin", "monter"]:
-        if advertisement.user_id != current_user_id:
+        if advertisement.user_id != actual_user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="자신의 광고만 등록할 수 있습니다."

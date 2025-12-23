@@ -142,7 +142,6 @@ def _apply_account_permission_filter(
     """
     current_username = current_user.get("username")
     current_role = current_user.get("role")
-    session_user_id = current_user.get("user_id")  # 세션의 user_id (참고용)
     
     # 슈퍼유저는 모든 계정 조회 가능
     if current_username in ["admin", "monter"]:
@@ -215,28 +214,39 @@ def _check_account_access_permission(
 ) -> bool:
     """
     계정 조회 권한 체크 (단일 계정용)
+    username 기반으로 실제 user_id 조회 후 체크
     Returns: True if access allowed, False otherwise
     """
     current_username = current_user.get("username")
     current_role = current_user.get("role")
-    current_user_id = current_user.get("user_id")
     
     # 슈퍼유저는 모든 계정 조회 가능
     if current_username in ["admin", "monter"]:
         return True
     
-    if current_role == "total":  # 총판사
+    # username으로 실제 user_id 조회
+    actual_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+    if not actual_user:
+        return False
+    
+    actual_user_id = actual_user.user_id
+    actual_role = actual_user.role
+    
+    if actual_role != current_role:
+        return False
+    
+    if actual_role == "total":  # 총판사
         # 자신 + 직접 하위 대행사 + 그 대행사들의 광고주
-        if account.user_id == current_user_id:
+        if account.user_id == actual_user_id:
             return True
         
         # 직접 하위 (대행사)
-        if account.parent_user_id == current_user_id:
+        if account.parent_user_id == actual_user_id:
             return True
         
         # 간접 하위 (대행사의 광고주)
         direct_agencies = db.query(UsersAdmin.user_id).filter(
-            UsersAdmin.parent_user_id == current_user_id,
+            UsersAdmin.parent_user_id == actual_user_id,
             UsersAdmin.role == "agency"
         ).all()
         agency_ids = [agency[0] for agency in direct_agencies]
@@ -245,19 +255,19 @@ def _check_account_access_permission(
         
         return False
     
-    elif current_role == "agency":  # 대행사
+    elif actual_role == "agency":  # 대행사
         # 자신 + 직접 하위 광고주만
-        if account.user_id == current_user_id:
+        if account.user_id == actual_user_id:
             return True
         
-        if account.parent_user_id == current_user_id and account.role == "advertiser":
+        if account.parent_user_id == actual_user_id and account.role == "advertiser":
             return True
         
         return False
     
-    elif current_role == "advertiser":  # 광고주
+    elif actual_role == "advertiser":  # 광고주
         # 자신만 조회 가능
-        return account.user_id == current_user_id
+        return account.user_id == actual_user_id
     
     return False
 
@@ -389,6 +399,24 @@ async def create_account(
     current_username = current_user.get("username")
     current_role = current_user.get("role")
     
+    # username으로 실제 user_id 조회
+    actual_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+    if not actual_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="사용자 정보를 찾을 수 없습니다."
+        )
+    
+    actual_user_id = actual_user.user_id
+    actual_role = actual_user.role
+    
+    # 세션의 role과 실제 role이 다르면 에러
+    if actual_role != current_role:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="권한 정보가 일치하지 않습니다. 다시 로그인해주세요."
+        )
+    
     # parent_user_id 자동 설정 (총판사는 parent_user_id가 None이어야 함)
     final_parent_user_id = account.parent_user_id
     
@@ -399,18 +427,18 @@ async def create_account(
             final_parent_user_id = None
         elif account.role == "agency":
             # 대행사는 총판사의 하위여야 함
-            if current_role == "total":
-                final_parent_user_id = current_user_id
+            if actual_role == "total":
+                final_parent_user_id = actual_user_id
             elif not final_parent_user_id:
                 # parent_user_id가 명시되지 않았으면 현재 사용자를 parent로 설정
-                final_parent_user_id = current_user_id
+                final_parent_user_id = actual_user_id
         elif account.role == "advertiser":
             # 광고주는 대행사의 하위여야 함
-            if current_role == "agency":
-                final_parent_user_id = current_user_id
+            if actual_role == "agency":
+                final_parent_user_id = actual_user_id
             elif not final_parent_user_id:
                 # parent_user_id가 명시되지 않았으면 현재 사용자를 parent로 설정
-                final_parent_user_id = current_user_id
+                final_parent_user_id = actual_user_id
     
     # parent_user_id 검증
     if account.role == "agency" and final_parent_user_id:

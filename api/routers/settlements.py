@@ -21,6 +21,10 @@ def _apply_settlement_permission_filter(
 ):
     """
     정산 로그 조회 권한에 따른 필터링 적용
+    계급구조와 소속 기반 필터링
+    - 총판사: 자신 + 직접 하위 대행사 + 그 대행사들의 광고주가 등록한 광고의 정산 로그
+    - 대행사: 자신 + 직접 하위 광고주가 등록한 광고의 정산 로그
+    - 광고주: 자신이 등록한 광고의 정산 로그만
     username 기반으로 실제 user_id 조회 후 필터링
     """
     current_username = current_user.get("username")
