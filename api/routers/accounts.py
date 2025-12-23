@@ -58,7 +58,7 @@ async def get_accounts(
     - 권한 기반 필터링 (화면 시작 시부터 적용)
     
     권한별 조회 범위:
-    - Admin/Monter: 모든 계정 조회
+    - Admin/Monteur: 모든 계정 조회
     - Total (총판사): 자신 + 자신이 직접 생성한 대행사 + 그 대행사들의 광고주
     - Agency (대행사): 자신 + 자신이 직접 생성한 광고주만
     - Advertiser (광고주): 자신만
@@ -144,7 +144,7 @@ def _apply_account_permission_filter(
     current_role = current_user.get("role")
     
     # 슈퍼유저는 모든 계정 조회 가능
-    if current_username in ["admin", "monter"]:
+    if current_username in ["admin", "monteur"]:
         return query  # 필터링 없음
     
     # username으로 실제 user_id 조회 (세션의 user_id 대신)
@@ -221,7 +221,7 @@ def _check_account_access_permission(
     current_role = current_user.get("role")
     
     # 슈퍼유저는 모든 계정 조회 가능
-    if current_username in ["admin", "monter"]:
+    if current_username in ["admin", "monteur"]:
         return True
     
     # username으로 실제 user_id 조회
@@ -421,7 +421,7 @@ async def create_account(
     final_parent_user_id = account.parent_user_id
     
     # 슈퍼유저가 아닌 경우, parent_user_id 자동 설정
-    if current_username not in ["admin", "monter"]:
+    if current_username not in ["admin", "monteur"]:
         if account.role == "total":
             # 총판사는 parent_user_id가 None이어야 함
             final_parent_user_id = None

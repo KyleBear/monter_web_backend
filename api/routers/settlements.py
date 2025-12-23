@@ -31,7 +31,7 @@ def _apply_settlement_permission_filter(
     current_role = current_user.get("role")
     
     # 슈퍼유저는 모든 정산 로그 조회 가능
-    if current_username in ["admin", "monter"]:
+    if current_username in ["admin", "monteur"]:
         return query  # 필터링 없음
     
     # username으로 실제 user_id 조회

@@ -65,7 +65,7 @@ def _apply_advertisement_permission_filter(
     current_role = current_user.get("role")
     
     # 슈퍼유저는 모든 광고 조회 가능
-    if current_username in ["admin", "monter"]:
+    if current_username in ["admin", "monteur"]:
         return query  # 필터링 없음
     
     # username으로 실제 user_id 조회
@@ -140,7 +140,7 @@ def _check_advertisement_ownership(
     current_role = current_user.get("role")
     
     # 슈퍼유저는 모든 광고 수정/삭제 가능
-    if current_username in ["admin", "monter"]:
+    if current_username in ["admin", "monteur"]:
         return True
     
     # username으로 실제 user_id 조회
@@ -416,7 +416,7 @@ async def create_advertisement(
         )
     
     # 슈퍼유저가 아니면 자신의 user_id만 사용 가능
-    if current_username not in ["admin", "monter"]:
+    if current_username not in ["admin", "monteur"]:
         if advertisement.user_id != actual_user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

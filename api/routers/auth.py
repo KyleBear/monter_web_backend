@@ -37,13 +37,13 @@ class VerifyResponse(BaseModel):
 # 하드코딩된 슈퍼유저 계정 (users_admin 테이블과 무관하게 로그인 가능)
 HARDCODED_ACCOUNTS = {
     "admin": {
-        "password": "monter1234",
-        "user_id": 0,
+        "password": "monteur1234",  # monter1234 → monteur1234
+        "user_id": 6,
         "role": "admin"
     },
-    "monter": {
-        "password": "monter",
-        "user_id": 1,
+    "monteur": {  # monter → monteur
+        "password": "monteur1234",  # monter → monteur1234
+        "user_id": 7,
         "role": "admin"
     }
 }

@@ -6,7 +6,7 @@ from datetime import datetime, time
 from fastapi import HTTPException, status
 
 # 슈퍼유저 username 목록
-SUPERUSER_USERNAMES = {"admin", "monter"}
+SUPERUSER_USERNAMES = {"admin", "monteur"}
 
 
 def check_edit_time_allowed(username: str = None, user_role: str = None):
