@@ -1,6 +1,6 @@
 """
 FastAPI 메인 서버
-포트 8000에서 실행
+포트 8001에서 실행
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -64,11 +64,11 @@ async def health_check():
 
 
 if __name__ == "__main__":
-    # 서버 실행 (포트 8000)
+    # 서버 실행 (포트 8001)
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
+        port=8001,
         reload=True  # 개발 모드: 코드 변경 시 자동 재시작
     )
 

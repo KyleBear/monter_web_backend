@@ -1,0 +1,54 @@
+# 환경 변수 파일
+.env
+.env.local
+.env.*.local
+
+# Python 캐시 파일
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Python 가상환경
+venv/
+env/
+ENV/
+.venv
+
+# IDE 설정 파일
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS 파일
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 로그 파일
+*.log
+logs/
+
+# 임시 파일
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# 데이터베이스 파일
+*.db
+*.sqlite
+*.sqlite3
+
+# 테스트 커버리지
+.coverage
+htmlcov/
+.pytest_cache/
+
+# 빌드 파일
+build/
+dist/
+*.egg-info/
+

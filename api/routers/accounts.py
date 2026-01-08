@@ -36,7 +36,16 @@ class AccountUpdate(BaseModel):
 
 
 class AccountDelete(BaseModel):
-    user_ids: List[int]
+    user_ids: Optional[List[int]] = None
+    account_ids: Optional[List[int]] = None  # 프론트엔드 호환성을 위한 별칭
+    
+    def get_user_ids(self) -> List[int]:
+        """user_ids 또는 account_ids 중 하나를 반환"""
+        if self.user_ids:
+            return self.user_ids
+        if self.account_ids:
+            return self.account_ids
+        return []
 
 
 @router.get("")
@@ -581,10 +590,19 @@ async def delete_accounts(
         user_role=current_user.get("role")
     )
     
+    # user_ids 또는 account_ids 중 하나 사용
+    user_ids_to_delete = delete_request.get_user_ids()
+    
+    if not user_ids_to_delete:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="삭제할 계정 ID를 제공해야 합니다. (user_ids 또는 account_ids)"
+        )
+    
     deleted_count = 0
     not_found_ids = []
     
-    for user_id in delete_request.user_ids:
+    for user_id in user_ids_to_delete:
         user = db.query(UsersAdmin).filter(UsersAdmin.user_id == user_id).first()
         
         if not user:

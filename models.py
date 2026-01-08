@@ -210,6 +210,7 @@ class AdvertisementsAdmin(Base):
     work_days = Column(Integer, comment='작업일수')
     start_date = Column(Date, nullable=False, comment='시작일')
     end_date = Column(Date, nullable=False, comment='종료일')
+    affiliation = Column(String(255), comment='소속')
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     

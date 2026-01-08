@@ -59,7 +59,7 @@ def _apply_advertisement_permission_filter(
 ):
     """
     광고 조회 권한에 따른 필터링 적용
-    username 기반으로 실제 user_id 조회 후 필터링
+    affiliation 기반으로 필터링 (같은 소속의 광고만 조회 가능)
     """
     current_username = current_user.get("username")
     current_role = current_user.get("role")
@@ -78,6 +78,7 @@ def _apply_advertisement_permission_filter(
     
     actual_user_id = actual_user.user_id
     actual_role = actual_user.role
+    actual_affiliation = actual_user.affiliation
     
     if actual_role != current_role:
         raise HTTPException(
@@ -85,46 +86,12 @@ def _apply_advertisement_permission_filter(
             detail="권한 정보가 일치하지 않습니다. 다시 로그인해주세요."
         )
     
-    if actual_role == "total":  # 총판사
-        # 자신 + 직접 하위 대행사 + 그 대행사들의 광고주가 등록한 광고
-        direct_agencies = db.query(UsersAdmin.user_id).filter(
-            UsersAdmin.parent_user_id == actual_user_id,
-            UsersAdmin.role == "agency"
-        ).all()
-        agency_ids = [agency[0] for agency in direct_agencies]
-        
-        filter_conditions = [
-            AdvertisementsAdmin.user_id == actual_user_id,  # 자신
-            UsersAdmin.parent_user_id == actual_user_id,  # 직접 하위 (대행사)
-        ]
-        
-        # 간접 하위 (대행사의 광고주) - agency_ids가 있을 때만 추가
-        if agency_ids:
-            filter_conditions.append(UsersAdmin.parent_user_id.in_(agency_ids))
-        
-        return query.filter(or_(*filter_conditions))
-    
-    elif actual_role == "agency":  # 대행사
-        # 자신 + 직접 하위 광고주가 등록한 광고만
-        return query.filter(
-            or_(
-                AdvertisementsAdmin.user_id == actual_user_id,  # 자신
-                and_(
-                    UsersAdmin.parent_user_id == actual_user_id,
-                    UsersAdmin.role == "advertiser"
-                )  # 직접 하위 (광고주)
-            )
-        )
-    
-    elif actual_role == "advertiser":  # 광고주
-        # 자신이 등록한 광고만 조회
+    # affiliation이 없는 경우 자신의 광고만 조회
+    if not actual_affiliation:
         return query.filter(AdvertisementsAdmin.user_id == actual_user_id)
     
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="권한이 없습니다."
-        )
+    # 같은 affiliation을 가진 광고만 조회
+    return query.filter(AdvertisementsAdmin.affiliation == actual_affiliation)
 
 
 def _check_advertisement_ownership(
@@ -275,6 +242,7 @@ async def get_advertisements(
             "work_days": ad.work_days,
             "start_date": ad.start_date.isoformat() if ad.start_date else None,
             "end_date": ad.end_date.isoformat() if ad.end_date else None,
+            "affiliation": ad.affiliation or "",
             "created_at": ad.created_at.isoformat() if ad.created_at else None
         })
     
@@ -371,6 +339,7 @@ async def get_advertisement(
             "work_days": ad.work_days,
             "start_date": ad.start_date.isoformat() if ad.start_date else None,
             "end_date": ad.end_date.isoformat() if ad.end_date else None,
+            "affiliation": ad.affiliation or "",
             "created_at": ad.created_at.isoformat() if ad.created_at else None,
             "updated_at": ad.updated_at.isoformat() if ad.updated_at else None
         }
@@ -445,6 +414,9 @@ async def create_advertisement(
     # 트랜잭션 시작 (광고 생성 + 정산 로그 생성)
     try:
         # 광고 생성 (status 기본값: 'pending')
+        # 사용자의 affiliation을 광고에 저장
+        user_affiliation = user.affiliation if user.affiliation else None
+        
         new_advertisement = AdvertisementsAdmin(
             user_id=advertisement.user_id,
             status="pending",
@@ -456,7 +428,8 @@ async def create_advertisement(
             price_comparison_mid=advertisement.price_comparison_mid,
             work_days=work_days,
             start_date=advertisement.start_date,
-            end_date=advertisement.end_date
+            end_date=advertisement.end_date,
+            affiliation=user_affiliation
         )
         
         db.add(new_advertisement)
