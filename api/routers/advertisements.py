@@ -2,7 +2,7 @@
 광고 관리 API 라우터
 광고 조회, 생성, 수정, 삭제, 연장
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, and_
 from pydantic import BaseModel
@@ -12,6 +12,9 @@ from models import AdvertisementsAdmin, UsersAdmin, SettlementAdmin
 from utils.time_check import check_edit_time_allowed
 from utils.auth_helpers import get_current_user
 from datetime import date, datetime, timedelta
+import pandas as pd
+from io import StringIO
+import re
 
 router = APIRouter()
 
@@ -33,14 +36,10 @@ class AdvertisementCreate(BaseModel):
 class AdvertisementUpdate(BaseModel):
     status: Optional[str] = None
     main_keyword: Optional[str] = None
-    price_comparison: Optional[bool] = None
-    plus: Optional[bool] = None
     product_name: Optional[str] = None
     product_mid: Optional[str] = None
-    price_comparison_mid: Optional[str] = None
-    work_days: Optional[int] = None
-    start_date: Optional[date] = None
-    end_date: Optional[date] = None
+    product_url: Optional[str] = None
+    memo: Optional[str] = None
 
 
 class AdvertisementDelete(BaseModel):
@@ -59,7 +58,10 @@ def _apply_advertisement_permission_filter(
 ):
     """
     광고 조회 권한에 따른 필터링 적용
-    affiliation 기반으로 필터링 (같은 소속의 광고만 조회 가능)
+    parent_user_id 기반으로 필터링 (계정 계층 구조 기반)
+    - 총판사: 자신 + 직접 하위 대행사 + 그 대행사들의 광고주가 등록한 광고
+    - 대행사: 자신 + 직접 하위 광고주가 등록한 광고
+    - 광고주: 자신이 등록한 광고만
     """
     current_username = current_user.get("username")
     current_role = current_user.get("role")
@@ -78,7 +80,6 @@ def _apply_advertisement_permission_filter(
     
     actual_user_id = actual_user.user_id
     actual_role = actual_user.role
-    actual_affiliation = actual_user.affiliation
     
     if actual_role != current_role:
         raise HTTPException(
@@ -86,12 +87,64 @@ def _apply_advertisement_permission_filter(
             detail="권한 정보가 일치하지 않습니다. 다시 로그인해주세요."
         )
     
-    # affiliation이 없는 경우 자신의 광고만 조회
-    if not actual_affiliation:
-        return query.filter(AdvertisementsAdmin.user_id == actual_user_id)
+    if actual_role == "total":  # 총판사
+        # 자신 + 직접 하위 대행사 + 그 대행사들의 광고주가 등록한 광고
+        direct_agencies = db.query(UsersAdmin.user_id).filter(
+            UsersAdmin.parent_user_id == actual_user_id,
+            UsersAdmin.role == "agency"
+        ).all()
+        agency_ids = [agency[0] for agency in direct_agencies]
+        
+        filter_conditions = [
+            AdvertisementsAdmin.user_id == actual_user_id  # 자신
+        ]
+        
+        # 직접 하위 대행사
+        if agency_ids:
+            filter_conditions.append(AdvertisementsAdmin.user_id.in_(agency_ids))
+        
+        # 간접 하위 (대행사의 광고주)
+        if agency_ids:
+            advertiser_ids = db.query(UsersAdmin.user_id).filter(
+                UsersAdmin.parent_user_id.in_(agency_ids),
+                UsersAdmin.role == "advertiser"
+            ).all()
+            advertiser_id_list = [adv[0] for adv in advertiser_ids]
+            if advertiser_id_list:
+                filter_conditions.append(AdvertisementsAdmin.user_id.in_(advertiser_id_list))
+        
+        return query.filter(or_(*filter_conditions))
     
-    # 같은 affiliation을 가진 광고만 조회
-    return query.filter(AdvertisementsAdmin.affiliation == actual_affiliation)
+    elif actual_role == "agency":  # 대행사
+        # 자신 + 직접 하위 광고주만
+        advertiser_ids = db.query(UsersAdmin.user_id).filter(
+            UsersAdmin.parent_user_id == actual_user_id,
+            UsersAdmin.role == "advertiser"
+        ).all()
+        advertiser_id_list = [adv[0] for adv in advertiser_ids]
+        
+        filter_conditions = [
+            AdvertisementsAdmin.user_id == actual_user_id  # 자신
+        ]
+        
+        if advertiser_id_list:
+            filter_conditions.append(AdvertisementsAdmin.user_id.in_(advertiser_id_list))
+        
+        return query.filter(or_(*filter_conditions))
+    
+    elif actual_role == "advertiser":  # 광고주
+        # 자신이 등록한 광고 + 상위 대행사가 등록한 광고 조회 가능
+        filter_conditions = [
+            AdvertisementsAdmin.user_id == actual_user_id  # 자신
+        ]
+        
+        # 상위 대행사가 등록한 광고
+        if actual_user.parent_user_id:
+            filter_conditions.append(AdvertisementsAdmin.user_id == actual_user.parent_user_id)
+        
+        return query.filter(or_(*filter_conditions))
+    
+    return query.filter(AdvertisementsAdmin.user_id == actual_user_id)
 
 
 def _check_advertisement_ownership(
@@ -101,7 +154,7 @@ def _check_advertisement_ownership(
 ) -> bool:
     """
     광고 소유권 체크
-    username 기반으로 실제 user_id 조회 후 체크
+    username 기반으로 실제 user_id 조회 후 체크 이유가 ? 
     """
     current_username = current_user.get("username")
     current_role = current_user.get("role")
@@ -144,15 +197,29 @@ def _check_advertisement_ownership(
         return False
     
     elif actual_role == "agency":  # 대행사
+        # 자신이 등록한 광고는 수정 가능
+        if ad.user_id == actual_user_id:
+            return True
+        
         # 직접 하위 광고주가 등록한 광고만 수정 가능
         if advertiser.parent_user_id == actual_user_id and advertiser.role == "advertiser":
             return True
-        
+
         return False
     
     elif actual_role == "advertiser":  # 광고주
-        # 자신이 등록한 광고만 수정 가능
-        return ad.user_id == actual_user_id
+        # 자신이 등록한 광고는 수정 가능
+        # affiliation + user_id 를 허용한 규칙 으로 총판 규칙을 나중에 추가.
+        if ad.user_id == actual_user_id:
+            return True
+        
+        # 상위 대행사가 등록한 광고도 수정 가능
+        if actual_user.parent_user_id and ad.user_id == actual_user.parent_user_id:
+            # 광고를 등록한 사용자가 대행사인 경우
+            if advertiser.role == "agency":
+                return True
+        
+        return False
     
     return False
 
@@ -358,10 +425,10 @@ async def create_advertisement(
     - 광고 등록과 동시에 정산 로그 생성 (order 타입)
     """
     # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
-    check_edit_time_allowed(
-        username=current_user.get("username"),
-        user_role=current_user.get("role")
-    )
+    # check_edit_time_allowed(
+    #     username=current_user.get("username"),
+    #     user_role=current_user.get("role")
+    # )
     
     current_username = current_user.get("username")
     current_role = current_user.get("role")
@@ -439,16 +506,21 @@ async def create_advertisement(
         # 대행사 ID 찾기 (광고주의 parent_user_id)
         agency_user_id = user.parent_user_id if user.role == "advertiser" else None
         
+        # 작업 수행자 ID (실제로 발주한 유저)
+        performed_by_user_id = actual_user_id
+        
         new_settlement = SettlementAdmin(
             settlement_type="order",
             agency_user_id=agency_user_id,
             advertiser_user_id=advertisement.user_id,
             ad_id=new_advertisement.ad_id,
+            performed_by_user_id=performed_by_user_id,
             quantity=1,
             period_start=advertisement.start_date,
             period_end=advertisement.end_date,
             total_days=work_days,
-            start_date=advertisement.start_date
+            start_date=advertisement.start_date,
+            ad_product_nm=new_advertisement.product_name
         )
         
         db.add(new_settlement)
@@ -473,6 +545,210 @@ async def create_advertisement(
         )
 
 
+@router.post("/upload-csv")
+async def upload_advertisements_csv(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    CSV 파일을 통한 광고 일괄 등록 API
+    CSV 형식:
+    - main_keyword (필수): 메인 키워드
+    - price_comparison (선택): Y/N 또는 True/False, 기본값: False
+    - product_name (선택): 상품명
+    - product_mid (선택): 상품 MID
+    - price_comparison_mid (선택): 가격비교 MID
+    - start_date (필수): 시작일 (YYYY-MM-DD 형식)
+    - end_date (필수): 종료일 (YYYY-MM-DD 형식)
+    """
+    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
+    # check_edit_time_allowed(
+    #     username=current_user.get("username"),
+    #     user_role=current_user.get("role")
+    # )
+    
+    current_username = current_user.get("username")
+    current_role = current_user.get("role")
+    
+    # username으로 실제 user_id 조회
+    actual_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+    if not actual_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="사용자 정보를 찾을 수 없습니다."
+        )
+    
+    actual_user_id = actual_user.user_id
+    actual_role = actual_user.role
+    user_affiliation = actual_user.affiliation if actual_user.affiliation else None
+    
+    # 세션의 role과 실제 role이 다르면 에러
+    if actual_role != current_role:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="권한 정보가 일치하지 않습니다. 다시 로그인해주세요."
+        )
+    
+    # 파일 확장자 확인
+    if not file.filename or not file.filename.endswith('.csv'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CSV 파일만 업로드 가능합니다."
+        )
+    
+    try:
+        # 파일 내용 읽기
+        contents = await file.read()
+        file_content = contents.decode('utf-8-sig')  # BOM 제거
+        
+        # pandas DataFrame으로 변환
+        df = pd.read_csv(StringIO(file_content))
+        
+        # 빈 파일 체크
+        if df.empty:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="CSV 파일이 비어있습니다."
+            )
+        
+        # 필수 컬럼 확인
+        required_columns = ['main_keyword', 'start_date', 'end_date']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"필수 컬럼이 없습니다: {', '.join(missing_columns)}"
+            )
+        
+        # 결과 저장용
+        success_count = 0
+        error_count = 0
+        errors = []
+        created_ad_ids = []
+        
+        # 각 행 처리
+        for index, row in df.iterrows():
+            try:
+                # 데이터 추출 및 변환
+                main_keyword = str(row['main_keyword']).strip()
+                if not main_keyword:
+                    errors.append(f"행 {index + 2}: main_keyword가 비어있습니다.")
+                    error_count += 1
+                    continue
+                
+                # price_comparison 처리
+                price_comparison = False
+                if 'price_comparison' in row and pd.notna(row['price_comparison']):
+                    pc_value = str(row['price_comparison']).strip().upper()
+                    price_comparison = pc_value in ['Y', 'TRUE', '1', 'YES']
+                
+                # 선택적 필드
+                product_name = str(row['product_name']).strip() if 'product_name' in row and pd.notna(row['product_name']) else None
+                product_mid = str(row['product_mid']).strip() if 'product_mid' in row and pd.notna(row['product_mid']) else None
+                price_comparison_mid = str(row['price_comparison_mid']).strip() if 'price_comparison_mid' in row and pd.notna(row['price_comparison_mid']) else None
+                
+                # 날짜 파싱
+                try:
+                    start_date = pd.to_datetime(row['start_date']).date()
+                    end_date = pd.to_datetime(row['end_date']).date()
+                except Exception as e:
+                    errors.append(f"행 {index + 2}: 날짜 형식 오류 - {str(e)}")
+                    error_count += 1
+                    continue
+                
+                # 날짜 유효성 검증
+                if start_date >= end_date:
+                    errors.append(f"행 {index + 2}: 시작일은 종료일보다 이전이어야 합니다.")
+                    error_count += 1
+                    continue
+                
+                # work_days 계산
+                delta = end_date - start_date
+                work_days = delta.days + 1
+                
+                # 광고 생성
+                new_advertisement = AdvertisementsAdmin(
+                    user_id=actual_user_id,
+                    status="pending",
+                    main_keyword=main_keyword,
+                    price_comparison=price_comparison,
+                    plus=plus,
+                    product_name=product_name,
+                    product_mid=product_mid,
+                    price_comparison_mid=price_comparison_mid,
+                    work_days=work_days,
+                    start_date=start_date,
+                    end_date=end_date,
+                    affiliation=user_affiliation
+                )
+                
+                db.add(new_advertisement)
+                db.flush()
+                
+                # 정산 로그 생성
+                agency_user_id = actual_user.parent_user_id if actual_user.role == "advertiser" else None
+                
+                # 작업 수행자 ID
+                performed_by_user_id = actual_user_id
+                
+                new_settlement = SettlementAdmin(
+                    settlement_type="order",
+                    agency_user_id=agency_user_id,
+                    advertiser_user_id=actual_user_id,
+                    ad_id=new_advertisement.ad_id,
+                    performed_by_user_id=performed_by_user_id,
+                    quantity=1,
+                    period_start=start_date,
+                    period_end=end_date,
+                    total_days=work_days,
+                    start_date=start_date,
+                    ad_product_nm=product_name
+                )
+                
+                db.add(new_settlement)
+                created_ad_ids.append(new_advertisement.ad_id)
+                success_count += 1
+                
+            except Exception as e:
+                errors.append(f"행 {index + 2}: {str(e)}")
+                error_count += 1
+                continue
+        
+        # 트랜잭션 커밋
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": f"CSV 업로드 완료: {success_count}개 성공, {error_count}개 실패",
+            "data": {
+                "success_count": success_count,
+                "error_count": error_count,
+                "created_ad_ids": created_ad_ids,
+                "errors": errors[:20] if len(errors) > 20 else errors  # 최대 20개만 반환
+            }
+        }
+    
+    except pd.errors.EmptyDataError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CSV 파일이 비어있습니다."
+        )
+    except pd.errors.ParserError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"CSV 파싱 오류: {str(e)}"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"CSV 업로드 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
 @router.put("/{ad_id}")
 async def update_advertisement(
     ad_id: int,
@@ -482,13 +758,17 @@ async def update_advertisement(
 ):
     """
     광고 수정 API
-    - 자신의 광고만 수정 가능
+    - 자신의 광고 또는 하위 계정의 광고 수정 가능
+    - 총판사: 자신 + 직접 하위 대행사 + 간접 하위(대행사의 광고주)가 등록한 광고 수정 가능
+    - 대행사: 자신 + 직접 하위 광고주가 등록한 광고 수정 가능
+    - 광고주: 자신이 등록한 광고만 수정 가능
+    - product_url에서 마지막 숫자를 추출하여 product_mid로 저장
     """
     # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
-    check_edit_time_allowed(
-        username=current_user.get("username"),
-        user_role=current_user.get("role")
-    )
+    # check_edit_time_allowed(
+    #     username=current_user.get("username"),
+    #     user_role=current_user.get("role")
+    # )
     
     # 광고 조회
     ad = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == ad_id).first()
@@ -527,46 +807,60 @@ async def update_advertisement(
     if advertisement.main_keyword:
         ad.main_keyword = advertisement.main_keyword
     
-    # 가격비교 변경
-    if advertisement.price_comparison is not None:
-        ad.price_comparison = advertisement.price_comparison
+    # product_url에서 마지막 숫자 추출하여 product_mid로 저장
+    if advertisement.product_url:
+        # URL에서 마지막 숫자 추출
+        match = re.search(r'/(\d+)(?:[/?#]|$)', advertisement.product_url)
+        if match:
+            ad.product_mid = match.group(1)
+        else:
+            # 숫자를 찾을 수 없으면 에러 처리
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="product_url에서 상품 ID를 추출할 수 없습니다."
+            )
     
-    # 플러스 변경
-    if advertisement.plus is not None:
-        ad.plus = advertisement.plus
+    # 메모 변경
+    if advertisement.memo is not None:
+        ad.memo = advertisement.memo
     
     # 상품명 변경
     if advertisement.product_name is not None:
         ad.product_name = advertisement.product_name
     
-    # 상품 MID 변경
+    # 상품 MID 변경 (직접 지정된 경우)
     if advertisement.product_mid is not None:
         ad.product_mid = advertisement.product_mid
     
-    # 가격비교 MID 변경
-    if advertisement.price_comparison_mid is not None:
-        ad.price_comparison_mid = advertisement.price_comparison_mid
-    
-    # 날짜 변경
-    start_date = advertisement.start_date if advertisement.start_date else ad.start_date
-    end_date = advertisement.end_date if advertisement.end_date else ad.end_date
-    
-    if advertisement.start_date or advertisement.end_date:
-        if start_date >= end_date:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="시작일은 종료일보다 이전이어야 합니다."
-            )
-        ad.start_date = start_date
-        ad.end_date = end_date
-        
-        # work_days 재계산
-        delta = end_date - start_date
-        ad.work_days = delta.days + 1
-    elif advertisement.work_days is not None:
-        ad.work_days = advertisement.work_days
-    
+    # 변경사항이 있으면 수정 로그 생성
     ad.updated_at = datetime.now()
+    
+    # 광고주 정보 조회 (대행사 ID 찾기 위해)
+    user = db.query(UsersAdmin).filter(UsersAdmin.user_id == ad.user_id).first()
+    if user:
+        agency_user_id = user.parent_user_id if user.role == "advertiser" else None
+        
+        # 작업 수행자 ID (실제로 수정한 유저)
+        current_username = current_user.get("username")
+        performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+        performed_by_user_id = performed_by_user.user_id if performed_by_user else None
+        
+        # 수정 로그 생성 (settlement_type='update')
+        new_settlement = SettlementAdmin(
+            settlement_type="update",
+            agency_user_id=agency_user_id,
+            advertiser_user_id=ad.user_id,
+            ad_id=ad.ad_id,
+            performed_by_user_id=performed_by_user_id,
+            quantity=None,
+            period_start=None,
+            period_end=None,
+            total_days=None,
+            start_date=None,
+            ad_product_nm=ad.product_name
+        )
+        
+        db.add(new_settlement)
     
     db.commit()
     db.refresh(ad)
@@ -589,14 +883,22 @@ async def delete_advertisements(
     """
     광고 삭제 API
     - 여러 광고 일괄 삭제
-    - 자신의 광고만 삭제 가능
+    - 광고주는 사용 불가, 총판사와 대행사만 사용 가능
     - 하드 삭제 (실제 데이터베이스에서 삭제)
     """
     # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
-    check_edit_time_allowed(
-        username=current_user.get("username"),
-        user_role=current_user.get("role")
-    )
+    # check_edit_time_allowed(
+    #     username=current_user.get("username"),
+    #     user_role=current_user.get("role")
+    # )
+    
+    # 광고주는 사용 불가
+    current_role = current_user.get("role")
+    if current_role == "advertiser":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="광고주는 광고 삭제 API를 사용할 수 없습니다."
+        )
     
     deleted_count = 0
     not_found_ids = []
@@ -613,6 +915,50 @@ async def delete_advertisements(
         if not _check_advertisement_ownership(ad, current_user, db):
             unauthorized_ids.append(ad_id)
             continue
+        
+        # 광고주 정보 조회
+        user = db.query(UsersAdmin).filter(UsersAdmin.user_id == ad.user_id).first()
+        if user:
+            # 작업 수행자 ID (실제로 삭제한 유저)
+            current_username = current_user.get("username")
+            performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+            performed_by_user_id = performed_by_user.user_id if performed_by_user else None
+            performed_by_role = performed_by_user.role if performed_by_user else None
+            
+            # 작업 수행자의 role에 따라 advertiser_user_id와 agency_user_id 결정
+            if performed_by_role == "agency":
+                # 대행사가 삭제한 경우
+                agency_user_id = performed_by_user_id  # 작업 수행자
+                advertiser_user_id = ad.user_id  # 광고 소유자
+            elif performed_by_role == "total":
+                # 총판사가 삭제한 경우
+                if user.role == "advertiser":
+                    agency_user_id = user.parent_user_id  # 광고주의 대행사
+                    advertiser_user_id = ad.user_id  # 광고 소유자
+                else:
+                    agency_user_id = None
+                    advertiser_user_id = ad.user_id
+            else:
+                # 관리자나 기타
+                agency_user_id = user.parent_user_id if user.role == "advertiser" else None
+                advertiser_user_id = ad.user_id
+            
+            # 삭제 로그 생성 (settlement_type='refund')
+            new_settlement = SettlementAdmin(
+                settlement_type="refund",
+                agency_user_id=agency_user_id,
+                advertiser_user_id=advertiser_user_id,
+                ad_id=ad.ad_id,
+                performed_by_user_id=performed_by_user_id,
+                quantity=None,
+                period_start=None,
+                period_end=None,
+                total_days=None,
+                start_date=None,
+                ad_product_nm=ad.product_name
+            )
+            
+            db.add(new_settlement)
         
         # 광고 삭제 (하드 삭제)
         db.delete(ad)
@@ -648,24 +994,32 @@ async def extend_advertisements(
     """
     광고 연장 API
     - 여러 광고 일괄 연장
-    - 자신의 광고만 연장 가능
-    - end_date에 extend_days 추가
+    - 광고를 복사하여 새 광고 생성 (원본 광고는 수정하지 않음)
+    - 새 광고의 start_date와 end_date는 원본 광고의 end_date부터 시작
+    - 광고주는 사용 불가, 대행사와 총판사만 사용 가능
     - 광고 연장과 동시에 정산 로그 생성 (extend 타입)
     """
     # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
-    check_edit_time_allowed(
-        username=current_user.get("username"),
-        user_role=current_user.get("role")
-    )
+    # check_edit_time_allowed(
+    #     username=current_user.get("username"),
+    #     user_role=current_user.get("role")
+    # )
+    
+    # 광고주는 사용 불가
+    current_role = current_user.get("role")
+    if current_role == "advertiser":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="광고주는 광고 연장 API를 사용할 수 없습니다."
+        )
     
     extended_ads = []
     not_found_ids = []
     ended_ads = []
     unauthorized_ids = []
-    failed_ads = []  # 정산 로그 생성 실패한 광고
+    failed_ads = []
     
     for ad_id in extend_request.ad_ids:
-        # 트랜잭션 시작
         try:
             ad = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == ad_id).first()
             
@@ -683,57 +1037,75 @@ async def extend_advertisements(
                 ended_ads.append(ad_id)
                 continue
             
-            # 광고주 정보 조회 (대행사 ID 찾기 위해)
+            # 광고주 정보 조회
             user = db.query(UsersAdmin).filter(UsersAdmin.user_id == ad.user_id).first()
             if not user:
                 failed_ads.append({"ad_id": ad_id, "reason": "광고주 정보를 찾을 수 없습니다."})
                 continue
             
-            # end_date에 extend_days 추가
-            if ad.end_date:
-                old_end_date = ad.end_date
-                new_end_date = ad.end_date + timedelta(days=extend_request.extend_days)
-                ad.end_date = new_end_date
-                
-                # work_days 재계산
-                if ad.start_date:
-                    delta = new_end_date - ad.start_date
-                    ad.work_days = delta.days + 1
-                
-                ad.updated_at = datetime.now()
-                
-                # 정산 로그 생성 (extend 타입)
-                # 대행사 ID 찾기 (광고주의 parent_user_id)
-                agency_user_id = user.parent_user_id if user.role == "advertiser" else None
-                
-                # 연장 기간 계산 (기존 종료일 다음날부터 새 종료일까지)
-                extend_period_start = old_end_date + timedelta(days=1)
-                extend_period_end = new_end_date
-                extend_total_days = extend_request.extend_days
-                
-                new_settlement = SettlementAdmin(
-                    settlement_type="extend",
-                    agency_user_id=agency_user_id,
-                    advertiser_user_id=ad.user_id,
-                    ad_id=ad.ad_id,
-                    quantity=1,
-                    period_start=extend_period_start,
-                    period_end=extend_period_end,
-                    total_days=extend_total_days,
-                    start_date=extend_period_start
-                )
-                
-                db.add(new_settlement)
-                db.flush()  # settlement_id를 얻기 위해 flush
-                
-                extended_ads.append({
-                    "ad_id": ad.ad_id,
-                    "new_end_date": new_end_date.isoformat(),
-                    "settlement_id": new_settlement.settlement_id
-                })
-            else:
+            # end_date가 없으면 연장 불가
+            if not ad.end_date:
                 failed_ads.append({"ad_id": ad_id, "reason": "종료일 정보가 없습니다."})
                 continue
+            
+            # 새 광고 생성 (원본 광고 복사)
+            # start_date와 end_date는 원본 광고의 end_date부터 시작
+            new_start_date = ad.end_date
+            new_end_date = ad.end_date + timedelta(days=extend_request.extend_days)
+            
+            # work_days 계산
+            new_work_days = extend_request.extend_days
+            
+            # 새 광고 생성
+            new_advertisement = AdvertisementsAdmin(
+                user_id=ad.user_id,
+                status="pending",  # 새 광고는 pending 상태로 시작
+                main_keyword=ad.main_keyword,
+                price_comparison=ad.price_comparison,
+                plus=ad.plus,
+                product_name=ad.product_name,
+                product_mid=ad.product_mid,
+                price_comparison_mid=ad.price_comparison_mid,
+                work_days=new_work_days,
+                start_date=new_start_date,
+                end_date=new_end_date,
+                affiliation=ad.affiliation
+            )
+            
+            db.add(new_advertisement)
+            db.flush()  # ad_id를 얻기 위해 flush
+            
+            # 정산 로그 생성 (extend 타입)
+            agency_user_id = user.parent_user_id if user.role == "advertiser" else None
+            
+            # 작업 수행자 ID (실제로 연장한 유저)
+            current_username = current_user.get("username")
+            performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+            performed_by_user_id = performed_by_user.user_id if performed_by_user else None
+            
+            new_settlement = SettlementAdmin(
+                settlement_type="extend",
+                agency_user_id=agency_user_id,
+                advertiser_user_id=ad.user_id,
+                ad_id=new_advertisement.ad_id,
+                performed_by_user_id=performed_by_user_id,
+                quantity=1,
+                period_start=new_start_date,
+                period_end=new_end_date,
+                total_days=new_work_days,
+                start_date=new_start_date,
+                ad_product_nm=ad.product_name
+            )
+            
+            db.add(new_settlement)
+            
+            extended_ads.append({
+                "original_ad_id": ad.ad_id,
+                "new_ad_id": new_advertisement.ad_id,
+                "new_start_date": new_start_date.isoformat(),
+                "new_end_date": new_end_date.isoformat(),
+                "settlement_id": new_settlement.settlement_id
+            })
         
         except Exception as e:
             db.rollback()
@@ -760,7 +1132,7 @@ async def extend_advertisements(
     if unauthorized_ids:
         message_parts.append(f"{len(unauthorized_ids)}개 광고는 연장 권한이 없습니다.")
     if failed_ads:
-        message_parts.append(f"{len(failed_ads)}개 광고는 정산 로그 생성 실패로 연장되지 않았습니다.")
+        message_parts.append(f"{len(failed_ads)}개 광고는 연장 처리에 실패했습니다.")
     
     return {
         "success": True,

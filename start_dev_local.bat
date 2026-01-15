@@ -8,7 +8,7 @@ echo =================================
 echo.
 echo This will start both Backend and Frontend servers
 echo.
-echo Backend: http://localhost:8000
+echo Backend: http://localhost:8001
 echo Frontend: http://localhost:3000
 echo.
 echo Press Ctrl+C to stop both servers

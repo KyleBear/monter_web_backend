@@ -59,12 +59,12 @@ def _apply_settlement_permission_filter(
         ).all()
         agency_ids = [agency[0] for agency in direct_agencies]
         
-        # 조회 가능한 광고주 ID 목록 구성
-        allowed_advertiser_ids = [actual_user_id]  # 자신
+        # 조회 가능한 사용자 ID 목록 구성
+        allowed_user_ids = [actual_user_id]  # 자신
         
-        # 직접 하위 대행사 (대행사가 광고를 등록한 경우)
+        # 직접 하위 대행사
         if agency_ids:
-            allowed_advertiser_ids.extend(agency_ids)
+            allowed_user_ids.extend(agency_ids)
         
         # 간접 하위 (대행사의 광고주)
         if agency_ids:
@@ -74,29 +74,50 @@ def _apply_settlement_permission_filter(
             ).all()
             advertiser_id_list = [adv[0] for adv in advertiser_ids]
             if advertiser_id_list:
-                allowed_advertiser_ids.extend(advertiser_id_list)
+                allowed_user_ids.extend(advertiser_id_list)
         
-        return query.filter(SettlementAdmin.advertiser_user_id.in_(allowed_advertiser_ids))
+        # advertiser_user_id, agency_user_id, performed_by_user_id 중 하나라도 허용된 ID 목록에 포함되면 조회 가능
+        return query.filter(
+            or_(
+                SettlementAdmin.advertiser_user_id.in_(allowed_user_ids),
+                SettlementAdmin.agency_user_id.in_(allowed_user_ids),
+                SettlementAdmin.performed_by_user_id.in_(allowed_user_ids)
+            )
+        )
     
     elif actual_role == "agency":  # 대행사
-        # 자신 + 직접 하위 광고주가 등록한 광고의 정산 로그만
+        # 자신 + 직접 하위 광고주가 등록한 광고의 정산 로그
         advertiser_ids = db.query(UsersAdmin.user_id).filter(
             UsersAdmin.parent_user_id == actual_user_id,
             UsersAdmin.role == "advertiser"
         ).all()
         advertiser_id_list = [adv[0] for adv in advertiser_ids]
         
-        # 조회 가능한 광고주 ID 목록 구성
-        allowed_advertiser_ids = [actual_user_id]  # 자신
+        # 조회 가능한 사용자 ID 목록 구성
+        allowed_user_ids = [actual_user_id]  # 자신
         
         if advertiser_id_list:
-            allowed_advertiser_ids.extend(advertiser_id_list)
+            allowed_user_ids.extend(advertiser_id_list)
         
-        return query.filter(SettlementAdmin.advertiser_user_id.in_(allowed_advertiser_ids))
+        # advertiser_user_id, agency_user_id, performed_by_user_id 중 하나라도 허용된 ID 목록에 포함되면 조회 가능
+        return query.filter(
+            or_(
+                SettlementAdmin.advertiser_user_id.in_(allowed_user_ids),
+                SettlementAdmin.agency_user_id.in_(allowed_user_ids),
+                SettlementAdmin.performed_by_user_id.in_(allowed_user_ids)
+            )
+        )
     
     elif actual_role == "advertiser":  # 광고주
         # 자신이 등록한 광고의 정산 로그만 조회
-        return query.filter(SettlementAdmin.advertiser_user_id == actual_user_id)
+        # advertiser_user_id, agency_user_id, performed_by_user_id 중 하나라도 자신의 ID면 조회 가능
+        return query.filter(
+            or_(
+                SettlementAdmin.advertiser_user_id == actual_user_id,
+                SettlementAdmin.agency_user_id == actual_user_id,
+                SettlementAdmin.performed_by_user_id == actual_user_id
+            )
+        )
     
     else:
         raise HTTPException(
@@ -163,24 +184,61 @@ async def get_settlements(
     for settlement in settlements:
         # 대행사 정보 조회
         agency_username = None
+        agency_role = None
         if settlement.agency_user_id:
             agency = db.query(UsersAdmin).filter(UsersAdmin.user_id == settlement.agency_user_id).first()
-            agency_username = agency.username if agency else None
+            if agency:
+                agency_username = agency.username
+                agency_role = agency.role
         
         # 광고주 정보 조회
         advertiser_username = None
+        advertiser_role = None
         if settlement.advertiser_user_id:
             advertiser = db.query(UsersAdmin).filter(UsersAdmin.user_id == settlement.advertiser_user_id).first()
-            advertiser_username = advertiser.username if advertiser else None
+            if advertiser:
+                advertiser_username = advertiser.username
+                advertiser_role = advertiser.role
+        
+        # 작업 수행자 정보 조회
+        performed_by_username = None
+        performed_by_role = None
+        if settlement.performed_by_user_id:
+            performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.user_id == settlement.performed_by_user_id).first()
+            if performed_by_user:
+                performed_by_username = performed_by_user.username
+                performed_by_role = performed_by_user.role
+        
+        # 광고 상품명은 정산 로그에 직접 저장된 ad_product_nm 사용
+        product_name = settlement.ad_product_nm if hasattr(settlement, 'ad_product_nm') else None
+        
+        # 광고 소유자 username 조회 (ad_id가 있는 경우에만)
+        advertisement_owner_username = None
+        if settlement.ad_id:
+            advertisement = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == settlement.ad_id).first()
+            if advertisement and advertisement.user_id:
+                ad_owner = db.query(UsersAdmin).filter(UsersAdmin.user_id == advertisement.user_id).first()
+                advertisement_owner_username = ad_owner.username if ad_owner else None
         
         settlement_list.append({
             "settlement_id": settlement.settlement_id,
             "settlement_type": settlement.settlement_type,
             "agency_user_id": settlement.agency_user_id,
             "agency_username": agency_username,
+            "agency_role": agency_role,  # 대행사 역할 추가
+            "agency_name": agency_username,  # 프론트엔드 호환성
+            "agency": agency_username,  # 프론트엔드 호환성
             "advertiser_user_id": settlement.advertiser_user_id,
             "advertiser_username": advertiser_username,
+            "advertiser_role": advertiser_role,  # 광고주 역할 추가
+            "advertiser_name": advertiser_username,  # 프론트엔드 호환성
+            "advertiser": advertiser_username,  # 프론트엔드 호환성
             "ad_id": settlement.ad_id,
+            "product_name": product_name,
+            "advertisement_owner_username": advertisement_owner_username,  # 광고 소유자 username
+            "performed_by_user_id": settlement.performed_by_user_id,
+            "performed_by_username": performed_by_username,
+            "performed_by_role": performed_by_role,  # 작업 수행자 역할 추가
             "quantity": settlement.quantity,
             "period_start": settlement.period_start.isoformat() if settlement.period_start else None,
             "period_end": settlement.period_end.isoformat() if settlement.period_end else None,
