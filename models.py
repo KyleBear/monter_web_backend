@@ -212,6 +212,9 @@ class AdvertisementsAdmin(Base):
     end_date = Column(Date, nullable=False, comment='종료일')
     affiliation = Column(String(255), comment='소속')
     memo = Column(Text, comment='메모')
+    rank = Column(Integer, comment='순위 (네이버 쇼핑 검색 결과)')
+    store_url = Column(String(500), comment='스마트스토어 URL')
+    shopping_url = Column(String(500), comment='쇼핑 검색 URL')
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     

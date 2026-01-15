@@ -22,12 +22,13 @@ router = APIRouter()
 # 요청/응답 모델
 class AdvertisementCreate(BaseModel):
     user_id: int
-    main_keyword: str
+    main_keyword: Optional[str] = None  # URL에서 추출 가능하므로 Optional
     price_comparison: bool = False
     plus: bool = False
     product_name: Optional[str] = None
-    product_mid: Optional[str] = None
-    price_comparison_mid: Optional[str] = None
+    # product_mid와 price_comparison_mid는 URL에서만 추출 (직접 입력 불가)
+    store_url: Optional[str] = None
+    shopping_url: Optional[str] = None
     work_days: int
     start_date: date
     end_date: date
@@ -38,7 +39,8 @@ class AdvertisementUpdate(BaseModel):
     main_keyword: Optional[str] = None
     product_name: Optional[str] = None
     product_mid: Optional[str] = None
-    product_url: Optional[str] = None
+    store_url: Optional[str] = None
+    shopping_url: Optional[str] = None
     memo: Optional[str] = None
 
 
@@ -224,6 +226,65 @@ def _check_advertisement_ownership(
     return False
 
 
+def _check_user_access_permission(
+    target_user_id: int,
+    current_user: dict,
+    db: Session
+) -> bool:
+    """
+    현재 사용자가 지정한 user_id에 대한 광고 생성 권한이 있는지 확인
+    계정 계층 구조 기반
+    - 총판사: 자신 + 직접 하위 대행사 + 그 대행사들의 광고주
+    - 대행사: 자신 + 직접 하위 광고주
+    """
+    current_username = current_user.get("username")
+    
+    # 슈퍼유저는 모든 사용자에 대해 권한 있음
+    if current_username in ["admin", "monteur"]:
+        return True
+    
+    # username으로 실제 user_id 조회
+    actual_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+    if not actual_user:
+        return False
+    
+    actual_user_id = actual_user.user_id
+    actual_role = actual_user.role
+    
+    # 자신이면 항상 권한 있음
+    if target_user_id == actual_user_id:
+        return True
+    
+    # 대상 사용자 조회
+    target_user = db.query(UsersAdmin).filter(UsersAdmin.user_id == target_user_id).first()
+    if not target_user:
+        return False
+    
+    if actual_role == "total":  # 총판사
+        # 직접 하위 대행사
+        if target_user.parent_user_id == actual_user_id and target_user.role == "agency":
+            return True
+        
+        # 간접 하위 (대행사의 광고주)
+        direct_agencies = db.query(UsersAdmin.user_id).filter(
+            UsersAdmin.parent_user_id == actual_user_id,
+            UsersAdmin.role == "agency"
+        ).all()
+        agency_ids = [agency[0] for agency in direct_agencies]
+        if target_user.parent_user_id in agency_ids and target_user.role == "advertiser":
+            return True
+        
+        return False
+    
+    elif actual_role == "agency":  # 대행사
+        # 직접 하위 광고주만
+        if target_user.parent_user_id == actual_user_id and target_user.role == "advertiser":
+            return True
+        return False
+    
+    return False
+
+
 @router.get("")
 async def get_advertisements(
     page: int = Query(1, ge=1),
@@ -306,6 +367,7 @@ async def get_advertisements(
             "product_name": ad.product_name or "",
             "product_mid": ad.product_mid or "",
             "price_comparison_mid": ad.price_comparison_mid or "",
+            "rank": ad.rank,
             "work_days": ad.work_days,
             "start_date": ad.start_date.isoformat() if ad.start_date else None,
             "end_date": ad.end_date.isoformat() if ad.end_date else None,
@@ -403,6 +465,7 @@ async def get_advertisement(
             "product_name": ad.product_name,
             "product_mid": ad.product_mid,
             "price_comparison_mid": ad.price_comparison_mid,
+            "rank": ad.rank,
             "work_days": ad.work_days,
             "start_date": ad.start_date.isoformat() if ad.start_date else None,
             "end_date": ad.end_date.isoformat() if ad.end_date else None,
@@ -421,7 +484,9 @@ async def create_advertisement(
 ):
     """
     광고 생성 API
-    - 자신의 user_id만 사용 가능 (자신의 광고만 등록 가능)
+    - 광고주는 사용 불가 (광고 수정만 가능)
+    - 대행사는 소속 사용자 지정 필수
+    - 총판사는 계정 계층 구조 내의 사용자 지정 가능
     - 광고 등록과 동시에 정산 로그 생성 (order 타입)
     """
     # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
@@ -432,6 +497,13 @@ async def create_advertisement(
     
     current_username = current_user.get("username")
     current_role = current_user.get("role")
+    
+    # 광고주는 사용 불가
+    if current_role == "advertiser":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="광고주는 광고 등록 API를 사용할 수 없습니다."
+        )
     
     # username으로 실제 user_id 조회
     actual_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
@@ -451,13 +523,30 @@ async def create_advertisement(
             detail="권한 정보가 일치하지 않습니다. 다시 로그인해주세요."
         )
     
-    # 슈퍼유저가 아니면 자신의 user_id만 사용 가능
-    if current_username not in ["admin", "monteur"]:
-        if advertisement.user_id != actual_user_id:
+    # 대행사는 소속 사용자 지정 필수
+    if actual_role == "agency":
+        # 대행사는 자신의 user_id가 아닌 다른 사용자를 지정해야 함
+        if advertisement.user_id == actual_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="대행사는 소속 사용자를 지정하여 광고를 등록해야 합니다."
+            )
+        
+        # 소속 사용자인지 확인
+        if not _check_user_access_permission(advertisement.user_id, current_user, db):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="자신의 광고만 등록할 수 있습니다."
+                detail="계정 계층 구조 내의 사용자만 지정할 수 있습니다."
             )
+    elif actual_role == "total":  # 총판사
+        # 총판사는 계정 계층 구조 내의 사용자 지정 가능
+        if advertisement.user_id != actual_user_id:
+            if not _check_user_access_permission(advertisement.user_id, current_user, db):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="계정 계층 구조 내의 사용자만 지정할 수 있습니다."
+                )
+    # 슈퍼유저는 모든 사용자 지정 가능 (추가 체크 불필요)
     
     # 사용자 존재 확인
     user = db.query(UsersAdmin).filter(UsersAdmin.user_id == advertisement.user_id).first()
@@ -474,6 +563,73 @@ async def create_advertisement(
             detail="시작일은 종료일보다 이전이어야 합니다."
         )
     
+    # main_keyword 필수 체크 (입력받은 값 사용)
+    if not advertisement.main_keyword:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="main_keyword는 필수입니다."
+        )
+    
+    # 입력받은 main_keyword 사용
+    main_keyword = advertisement.main_keyword
+    extracted_product_name = None
+    extracted_product_mid = None  # URL에서만 추출
+    extracted_price_comparison_mid = None  # URL에서만 추출
+    extracted_rank = None
+    extracted_store_url = advertisement.store_url
+    extracted_shopping_url = advertisement.shopping_url
+    
+    # store_url 또는 shopping_url이 있고 main_keyword가 있으면 순위 조회
+    if advertisement.store_url or advertisement.shopping_url:
+        try:
+            from api.routers.crol import get_rank_by_keyword_and_url
+            
+            # shopping_url 우선 시도
+            url_to_use = None
+            if advertisement.shopping_url:
+                url_to_use = advertisement.shopping_url
+            elif advertisement.store_url:
+                url_to_use = advertisement.store_url
+            
+            if url_to_use:
+                # 입력받은 main_keyword를 API로 전달
+                result = get_rank_by_keyword_and_url(advertisement.main_keyword, url_to_use)
+                
+                if result.get("success"):
+                    extracted_rank = result.get("rank")
+                    # API 매칭 성공 시 API에서 가져온 상품명 사용
+                    extracted_product_name = result.get("product_name")                    
+
+                    
+                    # product_id가 있으면 product_mid 업데이트 (스마트스토어 URL의 경우)
+                    product_id = result.get("product_id")
+                    if product_id:
+                        extracted_product_mid = product_id
+                    
+                    # nvmid가 있으면 price_comparison_mid 업데이트 (쇼핑 URL의 경우)
+                    nvmid = result.get("nvmid")
+                    if nvmid:
+                        extracted_price_comparison_mid = nvmid
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"URL에서 정보 추출 실패: {str(e)}")
+            # URL 추출 실패해도 광고 등록은 계속 진행
+    
+    # store_url에서 product_mid 추출 (매칭 성공 여부와 관계없이)
+    if advertisement.store_url and not extracted_product_mid:
+        match = re.search(r'smartstore\.naver\.com/[^/]+/products/(\d+)', advertisement.store_url)
+        if match:
+            extracted_product_mid = match.group(1)
+    
+    # shopping_url에서 price_comparison_mid 추출 (매칭 성공 여부와 관계없이)
+    if advertisement.shopping_url and not extracted_price_comparison_mid:
+        match = re.search(r'catalog/(\d+)', advertisement.shopping_url)
+        if match:
+            extracted_price_comparison_mid = match.group(1)
+    
+    # main_keyword는 이미 위에서 필수 체크 완료
+    
     # work_days 계산 (날짜 차이)
     delta = advertisement.end_date - advertisement.start_date
     work_days = delta.days + 1  # 시작일과 종료일 포함
@@ -487,16 +643,19 @@ async def create_advertisement(
         new_advertisement = AdvertisementsAdmin(
             user_id=advertisement.user_id,
             status="pending",
-            main_keyword=advertisement.main_keyword,
+            main_keyword=main_keyword,
             price_comparison=advertisement.price_comparison,
             plus=advertisement.plus,
-            product_name=advertisement.product_name,
-            product_mid=advertisement.product_mid,
-            price_comparison_mid=advertisement.price_comparison_mid,
+            product_name=extracted_product_name,
+            product_mid=extracted_product_mid,
+            price_comparison_mid=extracted_price_comparison_mid,
             work_days=work_days,
             start_date=advertisement.start_date,
             end_date=advertisement.end_date,
-            affiliation=user_affiliation
+            affiliation=user_affiliation,
+            rank=extracted_rank,
+            store_url=extracted_store_url,
+            shopping_url=extracted_shopping_url
         )
         
         db.add(new_advertisement)
@@ -520,7 +679,7 @@ async def create_advertisement(
             period_end=advertisement.end_date,
             total_days=work_days,
             start_date=advertisement.start_date,
-            ad_product_nm=new_advertisement.product_name
+            ad_product_nm=extracted_product_name  # URL에서 추출한 상품명 사용
         )
         
         db.add(new_settlement)
@@ -571,6 +730,13 @@ async def upload_advertisements_csv(
     current_username = current_user.get("username")
     current_role = current_user.get("role")
     
+    # 광고주는 사용 불가
+    if current_role == "advertiser":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="광고주는 CSV 업로드 API를 사용할 수 없습니다."
+        )
+    
     # username으로 실제 user_id 조회
     actual_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
     if not actual_user:
@@ -614,6 +780,10 @@ async def upload_advertisements_csv(
         
         # 필수 컬럼 확인
         required_columns = ['main_keyword', 'start_date', 'end_date']
+        # 대행사는 user_id 컬럼 필수
+        if actual_role == "agency":
+            required_columns.append('user_id')
+        
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
             raise HTTPException(
@@ -630,6 +800,95 @@ async def upload_advertisements_csv(
         # 각 행 처리
         for index, row in df.iterrows():
             try:
+                # user_id 처리 (대행사는 필수, 총판사는 선택)
+                if actual_role == "agency":
+                    # 대행사는 user_id 필수
+                    if 'user_id' not in row or pd.isna(row['user_id']):
+                        errors.append(f"행 {index + 2}: 대행사는 user_id를 지정해야 합니다.")
+                        error_count += 1
+                        continue
+                    
+                    try:
+                        target_user_id = int(row['user_id'])
+                    except (ValueError, TypeError):
+                        errors.append(f"행 {index + 2}: user_id는 숫자여야 합니다.")
+                        error_count += 1
+                        continue
+                    
+                    # 대행사는 자신의 user_id가 아닌 소속 사용자를 지정해야 함
+                    if target_user_id == actual_user_id:
+                        errors.append(f"행 {index + 2}: 대행사는 소속 사용자를 지정하여 광고를 등록해야 합니다.")
+                        error_count += 1
+                        continue
+                    
+                    # 소속 사용자인지 확인
+                    if not _check_user_access_permission(target_user_id, current_user, db):
+                        errors.append(f"행 {index + 2}: 계정 계층 구조 내의 사용자만 지정할 수 있습니다.")
+                        error_count += 1
+                        continue
+                    
+                    # 대상 사용자 존재 확인
+                    target_user = db.query(UsersAdmin).filter(UsersAdmin.user_id == target_user_id).first()
+                    if not target_user:
+                        errors.append(f"행 {index + 2}: 지정한 사용자를 찾을 수 없습니다.")
+                        error_count += 1
+                        continue
+                    
+                    row_user_id = target_user_id
+                    row_user_affiliation = target_user.affiliation if target_user.affiliation else None
+                elif actual_role == "total":
+                    # 총판사는 user_id가 있으면 사용, 없으면 자신의 user_id 사용
+                    if 'user_id' in row and pd.notna(row['user_id']):
+                        try:
+                            target_user_id = int(row['user_id'])
+                        except (ValueError, TypeError):
+                            errors.append(f"행 {index + 2}: user_id는 숫자여야 합니다.")
+                            error_count += 1
+                            continue
+                        
+                        # 자신이 아니면 권한 확인
+                        if target_user_id != actual_user_id:
+                            if not _check_user_access_permission(target_user_id, current_user, db):
+                                errors.append(f"행 {index + 2}: 계정 계층 구조 내의 사용자만 지정할 수 있습니다.")
+                                error_count += 1
+                                continue
+                            
+                            # 대상 사용자 존재 확인
+                            target_user = db.query(UsersAdmin).filter(UsersAdmin.user_id == target_user_id).first()
+                            if not target_user:
+                                errors.append(f"행 {index + 2}: 지정한 사용자를 찾을 수 없습니다.")
+                                error_count += 1
+                                continue
+                            
+                            row_user_id = target_user_id
+                            row_user_affiliation = target_user.affiliation if target_user.affiliation else None
+                        else:
+                            row_user_id = actual_user_id
+                            row_user_affiliation = user_affiliation
+                    else:
+                        row_user_id = actual_user_id
+                        row_user_affiliation = user_affiliation
+                else:
+                    # 슈퍼유저
+                    if 'user_id' in row and pd.notna(row['user_id']):
+                        try:
+                            row_user_id = int(row['user_id'])
+                        except (ValueError, TypeError):
+                            errors.append(f"행 {index + 2}: user_id는 숫자여야 합니다.")
+                            error_count += 1
+                            continue
+                        
+                        target_user = db.query(UsersAdmin).filter(UsersAdmin.user_id == row_user_id).first()
+                        if not target_user:
+                            errors.append(f"행 {index + 2}: 지정한 사용자를 찾을 수 없습니다.")
+                            error_count += 1
+                            continue
+                        
+                        row_user_affiliation = target_user.affiliation if target_user.affiliation else None
+                    else:
+                        row_user_id = actual_user_id
+                        row_user_affiliation = user_affiliation
+                
                 # 데이터 추출 및 변환
                 main_keyword = str(row['main_keyword']).strip()
                 if not main_keyword:
@@ -642,6 +901,12 @@ async def upload_advertisements_csv(
                 if 'price_comparison' in row and pd.notna(row['price_comparison']):
                     pc_value = str(row['price_comparison']).strip().upper()
                     price_comparison = pc_value in ['Y', 'TRUE', '1', 'YES']
+                
+                # plus 처리 (기본값 False)
+                plus = False
+                if 'plus' in row and pd.notna(row['plus']):
+                    plus_value = str(row['plus']).strip().upper()
+                    plus = plus_value in ['Y', 'TRUE', '1', 'YES']
                 
                 # 선택적 필드
                 product_name = str(row['product_name']).strip() if 'product_name' in row and pd.notna(row['product_name']) else None
@@ -667,9 +932,16 @@ async def upload_advertisements_csv(
                 delta = end_date - start_date
                 work_days = delta.days + 1
                 
+                # 대상 사용자 정보 조회 (정산 로그용)
+                row_user = db.query(UsersAdmin).filter(UsersAdmin.user_id == row_user_id).first()
+                if not row_user:
+                    errors.append(f"행 {index + 2}: 사용자를 찾을 수 없습니다.")
+                    error_count += 1
+                    continue
+                
                 # 광고 생성
                 new_advertisement = AdvertisementsAdmin(
-                    user_id=actual_user_id,
+                    user_id=row_user_id,
                     status="pending",
                     main_keyword=main_keyword,
                     price_comparison=price_comparison,
@@ -680,22 +952,23 @@ async def upload_advertisements_csv(
                     work_days=work_days,
                     start_date=start_date,
                     end_date=end_date,
-                    affiliation=user_affiliation
+                    affiliation=row_user_affiliation
                 )
                 
                 db.add(new_advertisement)
                 db.flush()
                 
                 # 정산 로그 생성
-                agency_user_id = actual_user.parent_user_id if actual_user.role == "advertiser" else None
+                # 대행사 ID 찾기 (광고주의 parent_user_id)
+                agency_user_id = row_user.parent_user_id if row_user.role == "advertiser" else None
                 
-                # 작업 수행자 ID
+                # 작업 수행자 ID (실제로 발주한 유저)
                 performed_by_user_id = actual_user_id
                 
                 new_settlement = SettlementAdmin(
                     settlement_type="order",
                     agency_user_id=agency_user_id,
-                    advertiser_user_id=actual_user_id,
+                    advertiser_user_id=row_user_id,
                     ad_id=new_advertisement.ad_id,
                     performed_by_user_id=performed_by_user_id,
                     quantity=1,
@@ -762,7 +1035,7 @@ async def update_advertisement(
     - 총판사: 자신 + 직접 하위 대행사 + 간접 하위(대행사의 광고주)가 등록한 광고 수정 가능
     - 대행사: 자신 + 직접 하위 광고주가 등록한 광고 수정 가능
     - 광고주: 자신이 등록한 광고만 수정 가능
-    - product_url에서 마지막 숫자를 추출하여 product_mid로 저장
+    - store_url에서 마지막 숫자를 추출하여 product_mid로 저장
     """
     # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
     # check_edit_time_allowed(
@@ -807,18 +1080,36 @@ async def update_advertisement(
     if advertisement.main_keyword:
         ad.main_keyword = advertisement.main_keyword
     
-    # product_url에서 마지막 숫자 추출하여 product_mid로 저장
-    if advertisement.product_url:
-        # URL에서 마지막 숫자 추출
-        match = re.search(r'/(\d+)(?:[/?#]|$)', advertisement.product_url)
-        if match:
-            ad.product_mid = match.group(1)
-        else:
-            # 숫자를 찾을 수 없으면 에러 처리
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="product_url에서 상품 ID를 추출할 수 없습니다."
-            )
+    # store_url 저장 및 product_mid 추출
+    if advertisement.store_url is not None:
+        ad.store_url = advertisement.store_url
+        # URL에서 마지막 숫자 추출하여 product_mid로 저장
+        if advertisement.store_url:
+            match = re.search(r'/(\d+)(?:[/?#]|$)', advertisement.store_url)
+            if match:
+                ad.product_mid = match.group(1)
+            else:
+                # 숫자를 찾을 수 없으면 에러 처리
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="store_url에서 상품 ID를 추출할 수 없습니다."
+                )
+    
+    # shopping_url 저장 및 price_comparison_mid 추출
+    if advertisement.shopping_url is not None:
+        ad.shopping_url = advertisement.shopping_url
+        # 쇼핑 URL에서 nvmid 추출하여 price_comparison_mid로 저장
+        if advertisement.shopping_url:
+            # 쇼핑 URL 패턴: https://search.shopping.naver.com/catalog/10639139232
+            match = re.search(r'catalog/(\d+)', advertisement.shopping_url)
+            if match:
+                ad.price_comparison_mid = match.group(1)
+            else:
+                # 숫자를 찾을 수 없으면 에러 처리
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="shopping_url에서 nvmid를 추출할 수 없습니다."
+                )
     
     # 메모 변경
     if advertisement.memo is not None:
@@ -861,6 +1152,26 @@ async def update_advertisement(
         )
         
         db.add(new_settlement)
+    
+    # 순위 업데이트 (store_url, shopping_url이 있거나 main_keyword와 product_mid가 있는 경우)
+    try:
+        store_url = advertisement.store_url
+        shopping_url = advertisement.shopping_url
+        
+        if store_url or shopping_url or (ad.main_keyword and ad.product_mid):
+            # 순환 import 방지를 위해 함수 내부에서 import
+            from api.routers.crol import update_single_advertisement_rank
+            update_single_advertisement_rank(
+                ad_id=ad.ad_id, 
+                db_session=db, 
+                store_url=store_url,
+                shopping_url=shopping_url
+            )
+    except Exception as e:
+        # 순위 업데이트 실패해도 광고 수정은 계속 진행
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"광고 ID {ad.ad_id} 순위 업데이트 실패: {str(e)}")
     
     db.commit()
     db.refresh(ad)
