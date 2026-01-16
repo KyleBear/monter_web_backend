@@ -641,15 +641,12 @@ def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Opt
                     db.commit()
                 return {"rank": None, "product_name": None}
             
-            # store_url에서 product_id 추출 (매칭 성공 여부와 관계없이)
-            if store_url:
-                match = re.search(r'(?:smartstore|brand)\.naver\.com/[^/]+/products/(\d+)', store_url)
-                if match:
-                    product_id_from_url = match.group(1)
-                    ad.product_mid = product_id_from_url
-                    logger.info(f"✓ Ad ID {ad_id}: store_url에서 product_mid 업데이트: {product_id_from_url}")
-            else:
-                # store_url이 없으면 product_mid를 None으로 설정
+            # store_url에서 product_id 추출 로직 제거 (방어로직 철회)
+            # smartstore URL의 nvmid는 순위 조회에서만 가져와서 product_mid에 저장
+            # product_id와 nvmid는 다른 값이므로 URL에서 추출한 product_id를 저장하지 않음
+            
+            # store_url이 없으면 product_mid를 None으로 설정
+            if not store_url:
                 ad.product_mid = None
                 logger.info(f"✓ Ad ID {ad_id}: store_url이 없어 product_mid를 NULL로 설정")
             
@@ -695,19 +692,27 @@ def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Opt
                     if shopping_nvmid:
                         ad.price_comparison_mid = shopping_nvmid
                         logger.info(f"✓ Ad ID {ad_id}: price_comparison_mid 업데이트 완료 (shopping URL 매칭): {shopping_nvmid}")
-                    else:
-                        # 매칭 성공했지만 nvmid가 없으면 NULL로 설정
-                        ad.price_comparison_mid = None
-                        logger.info(f"✓ Ad ID {ad_id}: shopping URL 매칭 성공했지만 nvmid가 없어 price_comparison_mid를 NULL로 설정")
-                else:
-                    # 매칭 실패 시 price_comparison_mid를 NULL로 설정
-                    ad.price_comparison_mid = None
-                    error = result.get("error", "알 수 없는 오류")
-                    logger.warning(f"Ad ID {ad_id}: shopping URL로 순위 조회 실패: {error}, price_comparison_mid를 NULL로 설정")
+                    # else:
+                    #     # 매칭 성공했지만 nvmid가 없으면 NULL로 설정
+                    #     ad.price_comparison_mid = None
+                    #     logger.info(f"✓ Ad ID {ad_id}: shopping URL 매칭 성공했지만 nvmid가 없어 price_comparison_mid를 NULL로 설정")
+                # else:
+                #     # 매칭 실패 시 price_comparison_mid를 NULL로 설정
+                #     ad.price_comparison_mid = None
+                #     error = result.get("error", "알 수 없는 오류")
+                #     logger.warning(f"Ad ID {ad_id}: shopping URL로 순위 조회 실패: {error}, price_comparison_mid를 NULL로 설정")
             
             # store_url 처리 (shopping_url 매칭 여부와 관계없이)
             if store_url:
                 logger.info(f"Ad ID {ad_id}: store URL로 순위 조회 시도: {store_url}")
+                
+                # smartstore 또는 brandstore URL인지 확인
+                is_smartstore_url = False
+                if store_url:
+                    url_lower = store_url.lower()
+                    if "smartstore.naver.com" in url_lower or "brand.naver.com" in url_lower:
+                        is_smartstore_url = True
+                
                 result = get_rank_by_keyword_and_url(ad.main_keyword, store_url)
                 
                 if result.get("success"):
@@ -726,21 +731,55 @@ def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Opt
                         ad.product_mid = store_nvmid
                         logger.info(f"✓ Ad ID {ad_id}: product_mid 업데이트 완료 (store URL 매칭): {store_nvmid}")
                     else:
-                        # 매칭된 nvmid가 없으면 null 처리
-                        ad.product_mid = None
-                        logger.info(f"✓ Ad ID {ad_id}: 매칭된 nvmid가 없어 product_mid를 NULL로 설정")
+                        # 매칭 성공했지만 nvmid가 없으면 product_url_copy.py를 통해서 nvmid와 product_name 추출 시도
+                        if is_smartstore_url:
+                            try:
+                                from api.routers.product_url_copy import get_nvmid_from_url
+                                product_nvmid, product_name_from_url = get_nvmid_from_url(store_url, verbose=False)
+                                if product_nvmid:
+                                    ad.product_mid = product_nvmid
+                                    logger.info(f"✓ Ad ID {ad_id}: product_url_copy.py를 통해 product_mid 업데이트 완료: {product_nvmid}")
+                                else:
+                                    ad.product_mid = None
+                                    logger.info(f"✓ Ad ID {ad_id}: 매칭된 nvmid가 없어 product_mid를 NULL로 설정")
+                                
+                                # product_name도 업데이트 (있으면)
+                                if product_name_from_url and product_name_from_url.strip():
+                                    store_product_name = product_name_from_url.strip()
+                                    logger.info(f"✓ Ad ID {ad_id}: product_url_copy.py를 통해 product_name 업데이트 완료: {product_name_from_url[:50]}...")
+                            except Exception as e:
+                                logger.warning(f"Ad ID {ad_id}: product_url_copy.py 호출 중 오류: {str(e)}")
+                                ad.product_mid = None
+                        else:
+                            ad.product_mid = None
+                            logger.info(f"✓ Ad ID {ad_id}: 매칭된 nvmid가 없어 product_mid를 NULL로 설정")
                 else:
-                    # 매칭 실패 시에도 nvmid가 없으면 null 처리
-                    ad.product_mid = None
-                    logger.info(f"✓ Ad ID {ad_id}: 매칭 실패로 product_mid를 NULL로 설정")
+                    # 매칭 실패 시 product_url_copy.py를 통해서 nvmid와 product_name 추출 시도 (smartstore/brandstore URL인 경우만)
+                    if is_smartstore_url:
+                        try:
+                            from api.routers.product_url_copy import get_nvmid_from_url
+                            product_nvmid, product_name_from_url = get_nvmid_from_url(store_url, verbose=False)
+                            if product_nvmid:
+                                ad.product_mid = product_nvmid
+                                logger.info(f"✓ Ad ID {ad_id}: 순위 조회 실패, product_url_copy.py를 통해 product_mid 업데이트 완료: {product_nvmid}")
+                            else:
+                                ad.product_mid = None
+                                logger.warning(f"Ad ID {ad_id}: 순위 조회 실패 및 product_url_copy.py로도 nvmid 추출 실패, product_mid를 NULL로 설정")
+                            
+                            # product_name도 업데이트 (있으면)
+                            if product_name_from_url and product_name_from_url.strip():
+                                store_product_name = product_name_from_url.strip()
+                                logger.info(f"✓ Ad ID {ad_id}: product_url_copy.py를 통해 product_name 업데이트 완료: {product_name_from_url[:50]}...")
+                        except Exception as e:
+                            logger.warning(f"Ad ID {ad_id}: product_url_copy.py 호출 중 오류: {str(e)}, product_mid를 NULL로 설정")
+                            ad.product_mid = None
+                    else:
+                        # 매칭 실패 시에도 nvmid가 없으면 null 처리
+                        ad.product_mid = None
+                        logger.info(f"✓ Ad ID {ad_id}: 매칭 실패로 product_mid를 NULL로 설정")
             
             # 순위 및 상품명 결정 (shopping_url 우선, 둘 다 매칭되면 shopping_url의 순위 사용)
-            # store_url이 None이거나 빈 문자열이면 rank와 product_name을 None으로 설정
-            if not store_url or store_url.strip() == "":
-                rank = None
-                product_name = None
-                logger.info(f"✓ Ad ID {ad_id}: store_url이 None이거나 빈 문자열이어서 rank와 product_name을 NULL로 설정")
-            elif shopping_rank is not None:
+            if shopping_rank is not None:
                 # shopping_url 매칭 성공 시 shopping_url의 순위 사용
                 rank = shopping_rank
                 # 상품명은 shopping_product_name 우선, 없으면 store_product_name 사용
@@ -761,11 +800,21 @@ def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Opt
                     # 상품명이 없으면 None (크롤링 실패)
                     product_name = None
                 logger.info(f"✓ Ad ID {ad_id}: store URL 순위 사용: {rank}")
-            else:
-                # 둘 다 조회 실패 시 rank와 product_name을 None으로 설정 (크롤링 실패)
+            elif not store_url or store_url.strip() == "":
+                # store_url이 없고 shopping_url도 매칭 실패한 경우
                 rank = None
                 product_name = None
-                logger.info(f"✓ Ad ID {ad_id}: 모든 URL 조회 실패로 rank와 product_name을 NULL로 설정")
+                logger.info(f"✓ Ad ID {ad_id}: store_url이 없고 shopping_url 매칭도 실패하여 rank와 product_name을 NULL로 설정")
+            else:
+                # 둘 다 조회 실패 시 rank는 None이지만, store_product_name은 product_url_copy.py를 통해 업데이트되었을 수 있음
+                rank = None
+                # store_product_name이 있으면 사용, 없으면 None
+                if store_product_name and store_product_name.strip():
+                    product_name = store_product_name.strip()
+                    logger.info(f"✓ Ad ID {ad_id}: 순위 조회 실패했지만 product_name은 product_url_copy.py를 통해 업데이트됨: {product_name[:50]}...")
+                else:
+                    product_name = None
+                    logger.info(f"✓ Ad ID {ad_id}: 모든 URL 조회 실패로 rank와 product_name을 NULL로 설정")
             
             # rank와 product_name 업데이트 (SQLAlchemy NULL 처리: None이면 NULL로 저장)
             ad.rank = rank

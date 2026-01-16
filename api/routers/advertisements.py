@@ -368,6 +368,8 @@ async def get_advertisements(
             "product_mid": ad.product_mid or "",
             "price_comparison_mid": ad.price_comparison_mid or "",
             "rank": ad.rank,
+            "store_url": ad.store_url or "",
+            "shopping_url": ad.shopping_url or "",
             "work_days": ad.work_days,
             "start_date": ad.start_date.isoformat() if ad.start_date else None,
             "end_date": ad.end_date.isoformat() if ad.end_date else None,
@@ -466,6 +468,8 @@ async def get_advertisement(
             "product_mid": ad.product_mid,
             "price_comparison_mid": ad.price_comparison_mid,
             "rank": ad.rank,
+            "store_url": ad.store_url,
+            "shopping_url": ad.shopping_url,
             "work_days": ad.work_days,
             "start_date": ad.start_date.isoformat() if ad.start_date else None,
             "end_date": ad.end_date.isoformat() if ad.end_date else None,
@@ -594,6 +598,10 @@ async def create_advertisement(
             
             # shopping_url 우선 시도
             if advertisement.shopping_url:
+                match = re.search(r'catalog/(\d+)', advertisement.shopping_url)
+                if match:
+                    # URL 파싱 성공 시 바로 nvmid로 사용 (smartstore와 다르게)
+                    extracted_price_comparison_mid = match.group(1)                
                 result = get_rank_by_keyword_and_url(advertisement.main_keyword, advertisement.shopping_url)
                 
                 if result.get("success"):
@@ -605,7 +613,6 @@ async def create_advertisement(
                     if shopping_nvmid:
                         extracted_price_comparison_mid = shopping_nvmid
                     else:
-                        # 매칭 성공했지만 nvmid가 없으면 NULL로 설정
                         extracted_price_comparison_mid = None
                 else:
                     # 매칭 실패 시 price_comparison_mid를 NULL로 설정
@@ -656,10 +663,11 @@ async def create_advertisement(
     
     # store_url에서 product_mid 추출 (매칭 성공 여부와 관계없이)
     # 매칭된 nvmid가 없을 때만 URL에서 직접 추출
-    if advertisement.store_url and not extracted_product_mid:
-        match = re.search(r'(?:smartstore|brand)\.naver\.com/[^/]+/products/(\d+)', advertisement.store_url)
-        if match:
-            extracted_product_mid = match.group(1)
+    # URL에서 직접 product_id를 추출하는 방어로직은 제거 (product_id와 nvmid는 다른 값)
+    # if advertisement.store_url and not extracted_product_mid:
+    #     match = re.search(r'(?:smartstore|brand)\.naver\.com/[^/]+/products/(\d+)', advertisement.store_url)
+    #     if match:
+    #         extracted_product_mid = match.group(1)
     
     # shopping_url에서 price_comparison_mid 추출 (매칭 성공 여부와 관계없이)
     # 매칭된 nvmid가 없을 때만 URL에서 직접 추출

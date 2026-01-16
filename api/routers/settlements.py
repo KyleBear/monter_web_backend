@@ -2,7 +2,7 @@
 정산 로그 API 라우터
 정산 로그 조회 (시간별 조회)
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, and_
 from typing import Optional
@@ -10,6 +10,8 @@ from database import get_db
 from models import SettlementAdmin, UsersAdmin, AdvertisementsAdmin
 from utils.auth_helpers import get_current_user
 from datetime import date, datetime, timedelta
+import csv
+import io
 
 router = APIRouter()
 
@@ -307,3 +309,324 @@ async def get_settlements(
             "total_days": total_days
         }
     }
+
+
+@router.get("/by-date")
+async def get_settlements_by_date(
+    start_date: date = Query(..., description="시작 날짜 (YYYY-MM-DD)"),
+    end_date: date = Query(..., description="종료 날짜 (YYYY-MM-DD)"),
+    settlement_type: Optional[str] = Query(None),
+    agency_user_id: Optional[int] = Query(None),
+    advertiser_user_id: Optional[int] = Query(None),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    정산 로그 날짜별 상세조회 API
+    - 날짜 범위의 정산 로그를 조회 (created_at 기준)
+    - start_date와 end_date는 필수 파라미터
+    - 정산 유형별 필터링
+    - 대행사/광고주 필터링
+    - 계급구조와 소속 기반 필터링
+    - 통계 정보 포함
+    """
+    # 날짜 범위 설정 (start_date 00:00:00 ~ end_date 23:59:59)
+    start_datetime = datetime.combine(start_date, datetime.min.time())
+    end_datetime = datetime.combine(end_date, datetime.max.time())
+    
+    # 기본 쿼리
+    query = db.query(SettlementAdmin)
+    
+    # 권한에 따른 조회 범위 필터링
+    query = _apply_settlement_permission_filter(query, current_user, db)
+    
+    # 날짜 범위 필터링 (created_at 기준)
+    query = query.filter(
+        SettlementAdmin.created_at >= start_datetime,
+        SettlementAdmin.created_at <= end_datetime
+    )
+    
+    # 정산 유형 필터링
+    if settlement_type:
+        query = query.filter(SettlementAdmin.settlement_type == settlement_type)
+    
+    # 대행사 필터링
+    if agency_user_id:
+        query = query.filter(SettlementAdmin.agency_user_id == agency_user_id)
+    
+    # 광고주 필터링
+    if advertiser_user_id:
+        query = query.filter(SettlementAdmin.advertiser_user_id == advertiser_user_id)
+    
+    # 모든 정산 로그 조회 (페이지네이션 없음 - 날짜별 상세조회)
+    settlements = query.order_by(SettlementAdmin.created_at.desc()).all()
+    
+    # 정산 로그 목록 구성
+    settlement_list = []
+    for settlement in settlements:
+        # 대행사 정보 조회
+        agency_username = None
+        agency_role = None
+        if settlement.agency_user_id:
+            agency = db.query(UsersAdmin).filter(UsersAdmin.user_id == settlement.agency_user_id).first()
+            if agency:
+                agency_username = agency.username
+                agency_role = agency.role
+        
+        # 광고주 정보 조회
+        advertiser_username = None
+        advertiser_role = None
+        if settlement.advertiser_user_id:
+            advertiser = db.query(UsersAdmin).filter(UsersAdmin.user_id == settlement.advertiser_user_id).first()
+            if advertiser:
+                advertiser_username = advertiser.username
+                advertiser_role = advertiser.role
+        
+        # 작업 수행자 정보 조회
+        performed_by_username = None
+        performed_by_role = None
+        if settlement.performed_by_user_id:
+            performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.user_id == settlement.performed_by_user_id).first()
+            if performed_by_user:
+                performed_by_username = performed_by_user.username
+                performed_by_role = performed_by_user.role
+        
+        # 광고 상품명은 정산 로그에 직접 저장된 ad_product_nm 사용
+        product_name = settlement.ad_product_nm if hasattr(settlement, 'ad_product_nm') else None
+        
+        # 광고 소유자 username 조회 (ad_id가 있는 경우에만)
+        advertisement_owner_username = None
+        if settlement.ad_id:
+            advertisement = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == settlement.ad_id).first()
+            if advertisement and advertisement.user_id:
+                ad_owner = db.query(UsersAdmin).filter(UsersAdmin.user_id == advertisement.user_id).first()
+                advertisement_owner_username = ad_owner.username if ad_owner else None
+        
+        settlement_list.append({
+            "settlement_id": settlement.settlement_id,
+            "settlement_type": settlement.settlement_type,
+            "agency_user_id": settlement.agency_user_id,
+            "agency_username": agency_username,
+            "agency_role": agency_role,
+            "agency_name": agency_username,
+            "agency": agency_username,
+            "advertiser_user_id": settlement.advertiser_user_id,
+            "advertiser_username": advertiser_username,
+            "advertiser_role": advertiser_role,
+            "advertiser_name": advertiser_username,
+            "advertiser": advertiser_username,
+            "ad_id": settlement.ad_id,
+            "product_name": product_name,
+            "advertisement_owner_username": advertisement_owner_username,
+            "performed_by_user_id": settlement.performed_by_user_id,
+            "performed_by_username": performed_by_username,
+            "performed_by_role": performed_by_role,
+            "quantity": settlement.quantity,
+            "period_start": settlement.period_start.isoformat() if settlement.period_start else None,
+            "period_end": settlement.period_end.isoformat() if settlement.period_end else None,
+            "total_days": settlement.total_days,
+            "created_at": settlement.created_at.isoformat() if settlement.created_at else None,
+            "start_date": settlement.start_date.isoformat() if settlement.start_date else None
+        })
+    
+    # 통계 계산 (권한 범위 내에서만)
+    stats_query = db.query(SettlementAdmin)
+    
+    # 권한에 따른 조회 범위 필터링 적용
+    stats_query = _apply_settlement_permission_filter(stats_query, current_user, db)
+    
+    # 날짜 범위 필터링 적용
+    stats_query = stats_query.filter(
+        SettlementAdmin.created_at >= start_datetime,
+        SettlementAdmin.created_at <= end_datetime
+    )
+    
+    # 발주 일수 합계
+    order_days = stats_query.filter(
+        SettlementAdmin.settlement_type == "order"
+    ).with_entities(func.sum(SettlementAdmin.total_days)).scalar() or 0
+    
+    # 연장 일수 합계
+    extend_days = stats_query.filter(
+        SettlementAdmin.settlement_type == "extend"
+    ).with_entities(func.sum(SettlementAdmin.total_days)).scalar() or 0
+    
+    # 환불 일수 합계
+    refund_days = stats_query.filter(
+        SettlementAdmin.settlement_type == "refund"
+    ).with_entities(func.sum(SettlementAdmin.total_days)).scalar() or 0
+    
+    # 일수 합계
+    total_days = (order_days or 0) + (extend_days or 0) + (refund_days or 0)
+    
+    return {
+        "success": True,
+        "data": {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "settlements": settlement_list,
+            "total": len(settlement_list)
+        },
+        "stats": {
+            "order_days": order_days or 0,
+            "extend_days": extend_days or 0,
+            "refund_days": refund_days or 0,
+            "total_days": total_days
+        }
+    }
+
+
+@router.get("/download-csv")
+async def download_settlements_csv(
+    start_datetime: Optional[datetime] = Query(None, description="시작 시간 (YYYY-MM-DDTHH:mm:ss)"),
+    end_datetime: Optional[datetime] = Query(None, description="종료 시간 (YYYY-MM-DDTHH:mm:ss)"),
+    settlement_type: Optional[str] = Query(None),
+    agency_user_id: Optional[int] = Query(None),
+    advertiser_user_id: Optional[int] = Query(None),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    정산 로그 CSV 다운로드 API
+    - 모든 정산 로그를 CSV 파일로 다운로드 (페이지네이션 없음)
+    - 시간 범위 필터링 (created_at 기준)
+    - 정산 유형별 필터링
+    - 계급구조와 소속 기반 필터링
+    """
+    # 기본 쿼리
+    query = db.query(SettlementAdmin)
+    
+    # 권한에 따른 조회 범위 필터링
+    query = _apply_settlement_permission_filter(query, current_user, db)
+    
+    # 시간 범위 필터링 (created_at 기준)
+    if start_datetime:
+        query = query.filter(SettlementAdmin.created_at >= start_datetime)
+    if end_datetime:
+        query = query.filter(SettlementAdmin.created_at <= end_datetime)
+    
+    # 정산 유형 필터링
+    if settlement_type:
+        query = query.filter(SettlementAdmin.settlement_type == settlement_type)
+    
+    # 대행사 필터링
+    if agency_user_id:
+        query = query.filter(SettlementAdmin.agency_user_id == agency_user_id)
+    
+    # 광고주 필터링
+    if advertiser_user_id:
+        query = query.filter(SettlementAdmin.advertiser_user_id == advertiser_user_id)
+    
+    # 모든 정산 로그 조회 (페이지네이션 없음)
+    settlements = query.order_by(SettlementAdmin.created_at.desc()).all()
+    
+    # CSV 데이터 생성
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # CSV 헤더
+    writer.writerow([
+        "정산ID",
+        "정산유형",
+        "대행사ID",
+        "대행사명",
+        "광고주ID",
+        "광고주명",
+        "광고ID",
+        "상품명",
+        "광고소유자",
+        "작업수행자ID",
+        "작업수행자명",
+        "작업수행자역할",
+        "수량",
+        "기간시작일",
+        "기간종료일",
+        "일수합계",
+        "시작일",
+        "생성일시"
+    ])
+    
+    # CSV 데이터 행
+    for settlement in settlements:
+        # 대행사 정보 조회
+        agency_username = None
+        agency_role = None
+        if settlement.agency_user_id:
+            agency = db.query(UsersAdmin).filter(UsersAdmin.user_id == settlement.agency_user_id).first()
+            if agency:
+                agency_username = agency.username
+                agency_role = agency.role
+        
+        # 광고주 정보 조회
+        advertiser_username = None
+        advertiser_role = None
+        if settlement.advertiser_user_id:
+            advertiser = db.query(UsersAdmin).filter(UsersAdmin.user_id == settlement.advertiser_user_id).first()
+            if advertiser:
+                advertiser_username = advertiser.username
+                advertiser_role = advertiser.role
+        
+        # 작업 수행자 정보 조회
+        performed_by_username = None
+        performed_by_role = None
+        if settlement.performed_by_user_id:
+            performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.user_id == settlement.performed_by_user_id).first()
+            if performed_by_user:
+                performed_by_username = performed_by_user.username
+                performed_by_role = performed_by_user.role
+        
+        # 광고 상품명은 정산 로그에 직접 저장된 ad_product_nm 사용
+        product_name = settlement.ad_product_nm if hasattr(settlement, 'ad_product_nm') else None
+        
+        # 광고 소유자 username 조회 (ad_id가 있는 경우에만)
+        advertisement_owner_username = None
+        if settlement.ad_id:
+            advertisement = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == settlement.ad_id).first()
+            if advertisement and advertisement.user_id:
+                ad_owner = db.query(UsersAdmin).filter(UsersAdmin.user_id == advertisement.user_id).first()
+                advertisement_owner_username = ad_owner.username if ad_owner else None
+        
+        # 정산유형 한글 변환
+        settlement_type_kr = {
+            "update": "수정",
+            "order": "발주",
+            "refund": "환불",
+            "extend": "연장"
+        }.get(settlement.settlement_type, settlement.settlement_type)  # 매핑되지 않은 경우 원본 값 사용
+        
+        writer.writerow([
+            settlement.settlement_id,
+            settlement_type_kr,  # 한글로 변환된 값 사용
+            settlement.agency_user_id or "",
+            agency_username or "",
+            settlement.advertiser_user_id or "",
+            advertiser_username or "",
+            settlement.ad_id or "",
+            product_name or "",
+            advertisement_owner_username or "",
+            settlement.performed_by_user_id or "",
+            performed_by_username or "",
+            performed_by_role or "",
+            settlement.quantity or "",
+            settlement.period_start.isoformat() if settlement.period_start else "",
+            settlement.period_end.isoformat() if settlement.period_end else "",
+            settlement.total_days or "",
+            settlement.start_date.isoformat() if settlement.start_date else "",
+            settlement.created_at.isoformat() if settlement.created_at else ""
+        ])
+    
+    # CSV 파일명 생성 (현재 시간 포함)
+    filename = f"settlements_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    
+    # UTF-8 BOM 추가 (Excel에서 한글 깨짐 방지)
+    output.seek(0)
+    csv_content = output.getvalue()
+    csv_bytes = '\ufeff' + csv_content  # UTF-8 BOM 추가
+    
+    return Response(
+        content=csv_bytes.encode('utf-8-sig'),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}"
+        }
+    )
