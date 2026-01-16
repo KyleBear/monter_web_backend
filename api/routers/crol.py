@@ -347,13 +347,13 @@ def get_rank_by_keyword_and_url(keyword: str, url: str) -> Dict:
     try:
         # 1. URL 타입 확인
         url_lower = url.lower()
-        if "smartstore.naver.com" in url_lower:
+        if "smartstore.naver.com" in url_lower or "brand.naver.com" in url_lower:
             url_type = "smartstore"
-            # 스마트스토어 URL에서 product_id 추출
-            pattern = r'smartstore\.naver\.com/[^/]+/products/(\d+)'
+            # 스마트스토어 또는 브랜드 스토어 URL에서 product_id 추출
+            pattern = r'(?:smartstore|brand)\.naver\.com/[^/]+/products/(\d+)'
             match = re.search(pattern, url)
             if not match:
-                result["error"] = f"스마트스토어 URL에서 product_id를 추출할 수 없습니다: {url}"
+                result["error"] = f"스마트스토어/브랜드 스토어 URL에서 product_id를 추출할 수 없습니다: {url}"
                 return result
             product_id = match.group(1)
             result["product_id"] = product_id
@@ -375,73 +375,145 @@ def get_rank_by_keyword_and_url(keyword: str, url: str) -> Dict:
             result["error"] = f"지원하지 않는 URL 형식입니다: {url}"
             return result
         
-        # 2. 네이버 오픈 API로 검색
-        api_results = get_shopping_rank_with_ad_flag(keyword, display=100, filter=None)
+        # 2. 여러 페이지 검색 (최대 1000개 결과)
+        display = 100
+        max_pages = 10
+        logger.info(f"키워드 '{keyword}'로 순위 조회 시작 (최대 {max_pages}페이지, {max_pages * display}개 결과)")
         
-        # 3. URL 타입에 따라 매칭 방식 결정
-        if url_type == "smartstore":
-            # product_id 다이렉트 매칭
-            target_id = product_id
-            for item in api_results:
-                product_id_from_api = str(item.get("productId", "")).strip()
-                if product_id_from_api == target_id:
-                    result["success"] = True
-                    result["rank"] = item.get("rank")
-                    result["product_name"] = item.get("product_name", "")
-                    logger.info(f"product_id 매칭 성공: product_id={target_id}, rank={result['rank']}")
-                    return result
-        
-        elif url_type == "shopping":
-            # nvmid 링크 매칭
-            target_nvmid = nvmid
-            logger.info(f"쇼핑 URL nvmid 매칭 시작: target_nvmid={target_nvmid}, 검색 결과 수={len(api_results)}")
+        for page in range(1, max_pages + 1):
+            start = (page - 1) * 100 + 1  # 1, 101, 201, 301, ...
             
-            for idx, item in enumerate(api_results, 1):
-                # 방법 1: productId가 nvmid일 수 있음
-                product_id = str(item.get("productId", "")).strip()
+            try:
+                # 네이버 오픈 API로 검색
+                api_results = get_shopping_rank_with_ad_flag(
+                    keyword, 
+                    display=display, 
+                    start=start, 
+                    filter=None
+                )
                 
-                # 방법 2: link URL에서 nvmid 추출
-                link = item.get("link", "")
-                nvmid_from_link = None
+                if not api_results:
+                    logger.debug(f"페이지 {page}: 결과 없음, 검색 중단")
+                    break
                 
-                if link:
-                    patterns = [
-                        r'nv_mid[=_](\d+)',
-                        r'nvmid[=_](\d+)',
-                        r'nv-mid[=_](\d+)',
-                        r'/catalog/(\d+)',
-                        r'catalog/(\d+)',  # 추가 패턴
-                    ]
+                logger.debug(f"페이지 {page} 검색 완료: {len(api_results)}개 결과 (start={start})")
+                
+                # 3. URL 타입에 따라 매칭 방식 결정
+                if url_type == "smartstore":
+                    # product_id 다이렉트 매칭
+                    target_id = product_id
+                    for item in api_results:
+                        product_id_from_api = str(item.get("productId", "")).strip()
+                        
+                        # link URL에서 product_id 추출 시도
+                        link = item.get("link", "")
+                        product_id_from_link = None
+                        
+                        if link:
+                            # link에서 product_id 패턴 찾기
+                            link_patterns = [
+                                r'/products/(\d+)',  # /products/숫자
+                            ]
+                            
+                            for pattern in link_patterns:
+                                match = re.search(pattern, link, re.IGNORECASE)
+                                if match:
+                                    product_id_from_link = match.group(1)
+                                    break
+                        
+                        # product_id 매칭 (productId 또는 link에서 추출한 값)
+                        if (product_id_from_api and product_id_from_api == target_id) or \
+                           (product_id_from_link and product_id_from_link == target_id):
+                            result["success"] = True
+                            result["rank"] = item.get("rank")
+                            result["product_name"] = item.get("product_name", "")
+                            
+                            # api_productId가 실제로는 nvmid이므로 이를 사용
+                            # link에서 nvmid 추출 시도 (없으면 api_productId 사용)
+                            nvmid_from_link = None
+                            
+                            if link:
+                                patterns = [
+                                    r'nv_mid[=_](\d+)',
+                                    r'nvmid[=_](\d+)',
+                                    r'nv-mid[=_](\d+)',
+                                    r'/catalog/(\d+)',
+                                    r'catalog/(\d+)',
+                                ]
+                                
+                                for pattern in patterns:
+                                    match = re.search(pattern, link, re.IGNORECASE)
+                                    if match:
+                                        nvmid_from_link = match.group(1)
+                                        break
+                            
+                            # nvmid 설정: link에서 추출한 값이 있으면 사용, 없으면 api_productId 사용
+                            nvmid = nvmid_from_link if nvmid_from_link else product_id_from_api
+                            result["nvmid"] = nvmid
+                            result["link"] = link  # 디버깅용
+                            
+                            logger.info(f"product_id 매칭 성공: api_productId={product_id_from_api} (nvmid), link_productId={product_id_from_link} (product_id), target={target_id}, rank={result['rank']}, nvmid={nvmid} (페이지 {page})")
+                            return result
+                
+                elif url_type == "shopping":
+                    # nvmid 링크 매칭
+                    target_nvmid = nvmid
+                    if page == 1:
+                        logger.info(f"쇼핑 URL nvmid 매칭 시작: target_nvmid={target_nvmid}, 검색 결과 수={len(api_results)}")
                     
-                    for pattern in patterns:
-                        match = re.search(pattern, link, re.IGNORECASE)
-                        if match:
-                            nvmid_from_link = match.group(1)
-                            break
+                    for idx, item in enumerate(api_results, 1):
+                        # 방법 1: productId가 nvmid일 수 있음
+                        product_id = str(item.get("productId", "")).strip()
+                        
+                        # 방법 2: link URL에서 nvmid 추출
+                        link = item.get("link", "")
+                        nvmid_from_link = None
+                        
+                        if link:
+                            patterns = [
+                                r'nv_mid[=_](\d+)',
+                                r'nvmid[=_](\d+)',
+                                r'nv-mid[=_](\d+)',
+                                r'/catalog/(\d+)',
+                                r'catalog/(\d+)',  # 추가 패턴
+                            ]
+                            
+                            for pattern in patterns:
+                                match = re.search(pattern, link, re.IGNORECASE)
+                                if match:
+                                    nvmid_from_link = match.group(1)
+                                    break
+                        
+                        # 디버깅 로그 (첫 페이지의 처음 5개만)
+                        if page == 1 and idx <= 5:
+                            logger.debug(f"매칭 시도 [{idx}]: productId={product_id}, link={link[:100]}, link_nvmid={nvmid_from_link}, target={target_nvmid}")
+                        
+                        # nvmid 매칭
+                        if (product_id and product_id == target_nvmid) or \
+                           (nvmid_from_link and nvmid_from_link == target_nvmid):
+                            result["success"] = True
+                            result["rank"] = item.get("rank")
+                            result["product_name"] = item.get("product_name", "")
+                            result["nvmid"] = nvmid  # nvmid 명시적으로 설정
+                            logger.info(f"nvmid 매칭 성공: productId={product_id}, link_nvmid={nvmid_from_link}, target={target_nvmid}, rank={result['rank']}, product_name={result['product_name']} (페이지 {page})")
+                            return result
                 
-                # 디버깅 로그 (처음 5개만)
-                if idx <= 5:
-                    logger.debug(f"매칭 시도 [{idx}]: productId={product_id}, link={link[:100]}, link_nvmid={nvmid_from_link}, target={target_nvmid}")
+                # 마지막 페이지면 중단
+                if len(api_results) < display:
+                    logger.debug(f"페이지 {page}: 마지막 페이지 (결과 {len(api_results)}개 < {display}개)")
+                    break
                 
-                # nvmid 매칭
-                if (product_id and product_id == target_nvmid) or \
-                   (nvmid_from_link and nvmid_from_link == target_nvmid):
-                    result["success"] = True
-                    result["rank"] = item.get("rank")
-                    result["product_name"] = item.get("product_name", "")
-                    result["nvmid"] = nvmid  # nvmid 명시적으로 설정
-                    logger.info(f"nvmid 매칭 성공: productId={product_id}, link_nvmid={nvmid_from_link}, target={target_nvmid}, rank={result['rank']}, product_name={result['product_name']}")
-                    return result
-            
-            # 매칭 실패 시 디버깅 정보
-            logger.warning(f"nvmid 매칭 실패: target_nvmid={target_nvmid}, 검색 결과에서 매칭되는 상품을 찾을 수 없습니다.")
-            if len(api_results) > 0:
-                # 처음 3개 결과의 productId와 link 로그
-                for idx, item in enumerate(api_results[:3], 1):
-                    logger.debug(f"검색 결과 [{idx}]: productId={item.get('productId', '')}, link={item.get('link', '')[:100]}")
+                # API 호출 간격 (너무 빠르면 제한될 수 있음)
+                time.sleep(0.2)
+                
+            except Exception as e:
+                logger.error(f"페이지 {page} 검색 중 오류: {e}", exc_info=True)
+                break
         
         # 매칭 실패
-        result["error"] = f"검색 결과에서 매칭되는 상품을 찾을 수 없습니다."
+        if url_type == "shopping":
+            logger.warning(f"nvmid 매칭 실패: target_nvmid={nvmid}, 검색 결과에서 매칭되는 상품을 찾을 수 없습니다. (최대 {max_pages}페이지 검색)")
+        result["error"] = f"검색 결과에서 매칭되는 상품을 찾을 수 없습니다. (최대 {max_pages}페이지 검색)"
         logger.warning(f"매칭 실패: keyword='{keyword}', url='{url}'")
         return result
         
@@ -543,6 +615,23 @@ def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Opt
         
         # store_url 또는 shopping_url이 제공된 경우
         logger.info(f"Ad ID {ad_id}: URL 체크 - store_url={store_url}, shopping_url={shopping_url}")
+        
+        # store_url과 shopping_url이 모두 None이거나 빈 문자열인 경우
+        store_url_empty = not store_url or (isinstance(store_url, str) and store_url.strip() == "")
+        shopping_url_empty = not shopping_url or (isinstance(shopping_url, str) and shopping_url.strip() == "")
+        
+        if store_url_empty and shopping_url_empty:
+            # 둘 다 없으면 rank, product_name, product_mid, price_comparison_mid를 NULL로 설정
+            ad.rank = None
+            ad.product_name = None
+            ad.product_mid = None
+            ad.price_comparison_mid = None
+            logger.info(f"✓ Ad ID {ad_id}: store_url과 shopping_url이 모두 없어서 rank, product_name, product_mid, price_comparison_mid를 NULL로 설정")
+            db.flush()
+            if should_close:
+                db.commit()
+            return {"rank": None, "product_name": None}
+        
         if store_url or shopping_url:
             # main_keyword는 프론트엔드에서 필수로 처리되므로 없을 경우는 없음
             # 하지만 안전성을 위해 체크는 유지
@@ -554,96 +643,153 @@ def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Opt
             
             # store_url에서 product_id 추출 (매칭 성공 여부와 관계없이)
             if store_url:
-                match = re.search(r'smartstore\.naver\.com/[^/]+/products/(\d+)', store_url)
+                match = re.search(r'(?:smartstore|brand)\.naver\.com/[^/]+/products/(\d+)', store_url)
                 if match:
                     product_id_from_url = match.group(1)
                     ad.product_mid = product_id_from_url
                     logger.info(f"✓ Ad ID {ad_id}: store_url에서 product_mid 업데이트: {product_id_from_url}")
+            else:
+                # store_url이 없으면 product_mid를 None으로 설정
+                ad.product_mid = None
+                logger.info(f"✓ Ad ID {ad_id}: store_url이 없어 product_mid를 NULL로 설정")
             
             # shopping_url에서 nvmid 추출 (매칭 성공 여부와 관계없이)
-            if shopping_url:
+            if shopping_url and shopping_url.strip():
                 match = re.search(r'catalog/(\d+)', shopping_url)
                 if match:
                     nvmid_from_url = match.group(1)
                     ad.price_comparison_mid = nvmid_from_url
                     logger.info(f"✓ Ad ID {ad_id}: shopping_url에서 price_comparison_mid 업데이트: {nvmid_from_url}")
+            else:
+                # shopping_url이 비어있으면 price_comparison_mid를 빈칸으로 업데이트
+                ad.price_comparison_mid = None
+                logger.info(f"✓ Ad ID {ad_id}: shopping_url이 비어있어 price_comparison_mid를 NULL로 설정")
             
-            # shopping_url 우선 시도
+            # 순위 조회 (shopping_url 우선, 둘 다 있으면 둘 다 처리)
             rank = None
             product_name = None
+            shopping_rank = None
+            shopping_product_name = None
+            shopping_nvmid = None
+            store_rank = None
+            store_product_name = None
+            store_nvmid = None
             
+            # shopping_url 우선 시도
             if shopping_url:
                 logger.info(f"Ad ID {ad_id}: shopping URL로 순위 조회 시도: {shopping_url}")
                 result = get_rank_by_keyword_and_url(ad.main_keyword, shopping_url)
                 
                 if result.get("success"):
-                    rank = result.get("rank")
-                    product_name = result.get("product_name")
-                    nvmid = result.get("nvmid")
+                    shopping_rank = result.get("rank")
+                    shopping_product_name = result.get("product_name")
+                    shopping_nvmid = result.get("nvmid")
                     
-                    logger.info(f"Ad ID {ad_id}: 매칭 성공 - rank={rank}, product_name={product_name}, nvmid={nvmid}")
+                    # SQLAlchemy NULL 처리: 빈 문자열이나 None을 명시적으로 None으로 변환
+                    if shopping_product_name is not None and not shopping_product_name.strip():
+                        shopping_product_name = None
                     
-                    # rank와 product_name 업데이트
-                    ad.rank = rank
-                    if product_name and product_name.strip():
-                        ad.product_name = product_name.strip()
-                        logger.info(f"✓ Ad ID {ad_id}: 상품명 업데이트 완료: {product_name}")
+                    logger.info(f"Ad ID {ad_id}: shopping URL 매칭 성공 - rank={shopping_rank}, product_name={shopping_product_name}, nvmid={shopping_nvmid}")
+                    
+                    # nvmid가 있으면 price_comparison_mid 업데이트, 없으면 NULL로 설정
+                    if shopping_nvmid:
+                        ad.price_comparison_mid = shopping_nvmid
+                        logger.info(f"✓ Ad ID {ad_id}: price_comparison_mid 업데이트 완료 (shopping URL 매칭): {shopping_nvmid}")
                     else:
-                        logger.warning(f"Ad ID {ad_id}: product_name이 비어있습니다.")
-                    
-                    # nvmid가 있으면 price_comparison_mid 업데이트 (매칭 성공 시)
-                    if nvmid:
-                        ad.price_comparison_mid = nvmid
-                        logger.info(f"✓ Ad ID {ad_id}: price_comparison_mid 업데이트 완료 (매칭 성공): {nvmid}")
-                    else:
-                        logger.warning(f"Ad ID {ad_id}: result에서 nvmid를 가져올 수 없습니다. result={result}")
-                    
-                    if should_close:
-                        db.commit()
-                    
-                    if rank:
-                        logger.info(f"✓ Ad ID {ad_id}: 순위 {rank} (shopping URL로 업데이트 완료)")
-                    else:
-                        logger.info(f"✗ Ad ID {ad_id}: 순위 없음 (NULL로 설정)")
-                    
-                    return {"rank": rank, "product_name": product_name}
+                        # 매칭 성공했지만 nvmid가 없으면 NULL로 설정
+                        ad.price_comparison_mid = None
+                        logger.info(f"✓ Ad ID {ad_id}: shopping URL 매칭 성공했지만 nvmid가 없어 price_comparison_mid를 NULL로 설정")
                 else:
+                    # 매칭 실패 시 price_comparison_mid를 NULL로 설정
+                    ad.price_comparison_mid = None
                     error = result.get("error", "알 수 없는 오류")
-                    logger.warning(f"Ad ID {ad_id}: shopping URL로 순위 조회 실패: {error}, store URL로 시도합니다.")
+                    logger.warning(f"Ad ID {ad_id}: shopping URL로 순위 조회 실패: {error}, price_comparison_mid를 NULL로 설정")
             
-            # shopping_url 매칭 실패했거나 없으면 store_url 시도
-            if not rank and store_url:
+            # store_url 처리 (shopping_url 매칭 여부와 관계없이)
+            if store_url:
                 logger.info(f"Ad ID {ad_id}: store URL로 순위 조회 시도: {store_url}")
                 result = get_rank_by_keyword_and_url(ad.main_keyword, store_url)
                 
                 if result.get("success"):
-                    rank = result.get("rank")
-                    product_name = result.get("product_name")
-                    product_id = result.get("product_id")
+                    store_rank = result.get("rank")
+                    store_product_name = result.get("product_name")
+                    store_nvmid = result.get("nvmid")
                     
-                    # rank와 product_name 업데이트
-                    ad.rank = rank
-                    if product_name:
-                        ad.product_name = product_name.strip()
-                        logger.info(f"✓ Ad ID {ad_id}: 상품명 업데이트 완료: {product_name}")
+                    # SQLAlchemy NULL 처리: 빈 문자열이나 None을 명시적으로 None으로 변환
+                    if store_product_name is not None and not store_product_name.strip():
+                        store_product_name = None
                     
-                    # product_id가 있으면 product_mid 업데이트 (매칭 성공 시)
-                    if product_id:
-                        ad.product_mid = product_id
-                        logger.info(f"✓ Ad ID {ad_id}: product_mid 업데이트 완료 (매칭 성공): {product_id}")
+                    logger.info(f"Ad ID {ad_id}: store URL 매칭 성공 - rank={store_rank}, product_name={store_product_name}, nvmid={store_nvmid}")
                     
-                    if should_close:
-                        db.commit()
-                    
-                    if rank:
-                        logger.info(f"✓ Ad ID {ad_id}: 순위 {rank} (store URL로 업데이트 완료)")
+                    # nvmid가 있으면 product_mid 업데이트
+                    if store_nvmid:
+                        ad.product_mid = store_nvmid
+                        logger.info(f"✓ Ad ID {ad_id}: product_mid 업데이트 완료 (store URL 매칭): {store_nvmid}")
                     else:
-                        logger.info(f"✗ Ad ID {ad_id}: 순위 없음 (NULL로 설정)")
-                    
-                    return {"rank": rank, "product_name": product_name}
+                        # 매칭된 nvmid가 없으면 null 처리
+                        ad.product_mid = None
+                        logger.info(f"✓ Ad ID {ad_id}: 매칭된 nvmid가 없어 product_mid를 NULL로 설정")
                 else:
-                    error = result.get("error", "알 수 없는 오류")
-                    logger.warning(f"Ad ID {ad_id}: store URL로 순위 조회 실패: {error}")
+                    # 매칭 실패 시에도 nvmid가 없으면 null 처리
+                    ad.product_mid = None
+                    logger.info(f"✓ Ad ID {ad_id}: 매칭 실패로 product_mid를 NULL로 설정")
+            
+            # 순위 및 상품명 결정 (shopping_url 우선, 둘 다 매칭되면 shopping_url의 순위 사용)
+            # store_url이 None이거나 빈 문자열이면 rank와 product_name을 None으로 설정
+            if not store_url or store_url.strip() == "":
+                rank = None
+                product_name = None
+                logger.info(f"✓ Ad ID {ad_id}: store_url이 None이거나 빈 문자열이어서 rank와 product_name을 NULL로 설정")
+            elif shopping_rank is not None:
+                # shopping_url 매칭 성공 시 shopping_url의 순위 사용
+                rank = shopping_rank
+                # 상품명은 shopping_product_name 우선, 없으면 store_product_name 사용
+                if shopping_product_name and shopping_product_name.strip():
+                    product_name = shopping_product_name.strip()
+                elif store_product_name and store_product_name.strip():
+                    product_name = store_product_name.strip()
+                else:
+                    # 둘 다 없으면 None (크롤링 실패)
+                    product_name = None
+                logger.info(f"✓ Ad ID {ad_id}: shopping URL 순위 사용: {rank}")
+            elif store_rank is not None:
+                # shopping_url 매칭 실패 시 store_url의 순위 사용
+                rank = store_rank
+                if store_product_name and store_product_name.strip():
+                    product_name = store_product_name.strip()
+                else:
+                    # 상품명이 없으면 None (크롤링 실패)
+                    product_name = None
+                logger.info(f"✓ Ad ID {ad_id}: store URL 순위 사용: {rank}")
+            else:
+                # 둘 다 조회 실패 시 rank와 product_name을 None으로 설정 (크롤링 실패)
+                rank = None
+                product_name = None
+                logger.info(f"✓ Ad ID {ad_id}: 모든 URL 조회 실패로 rank와 product_name을 NULL로 설정")
+            
+            # rank와 product_name 업데이트 (SQLAlchemy NULL 처리: None이면 NULL로 저장)
+            ad.rank = rank
+            # product_name이 빈 문자열이거나 None이면 명시적으로 None으로 설정 (SQLAlchemy에서 NULL로 저장)
+            if product_name is not None and not product_name.strip():
+                product_name = None
+            ad.product_name = product_name  # None이면 SQLAlchemy가 NULL로 저장
+            if product_name:
+                logger.info(f"✓ Ad ID {ad_id}: 상품명 업데이트 완료: {product_name}")
+            else:
+                logger.info(f"✓ Ad ID {ad_id}: 상품명을 NULL로 업데이트 완료 (크롤링 실패)")
+            
+            # 변경사항을 DB에 반영 (외부 세션에서 commit하기 전에 flush)
+            db.flush()
+            
+            if should_close:
+                db.commit()
+            
+            if rank:
+                logger.info(f"✓ Ad ID {ad_id}: 순위 {rank} 업데이트 완료")
+            else:
+                logger.info(f"✗ Ad ID {ad_id}: 순위 없음 (NULL로 설정)")
+            
+            return {"rank": rank, "product_name": product_name}
             
             # 모든 URL 매칭 실패
             # 매칭 실패해도 product_mid와 price_comparison_mid는 이미 위에서 업데이트됨

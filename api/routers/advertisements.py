@@ -584,32 +584,70 @@ async def create_advertisement(
         try:
             from api.routers.crol import get_rank_by_keyword_and_url
             
-            # shopping_url 우선 시도
-            url_to_use = None
-            if advertisement.shopping_url:
-                url_to_use = advertisement.shopping_url
-            elif advertisement.store_url:
-                url_to_use = advertisement.store_url
+            # 순위 조회 (shopping_url 우선, 둘 다 있으면 둘 다 처리)
+            shopping_rank = None
+            shopping_product_name = None
+            shopping_nvmid = None
+            store_rank = None
+            store_product_name = None
+            store_nvmid = None
             
-            if url_to_use:
-                # 입력받은 main_keyword를 API로 전달
-                result = get_rank_by_keyword_and_url(advertisement.main_keyword, url_to_use)
+            # shopping_url 우선 시도
+            if advertisement.shopping_url:
+                result = get_rank_by_keyword_and_url(advertisement.main_keyword, advertisement.shopping_url)
                 
                 if result.get("success"):
-                    extracted_rank = result.get("rank")
-                    # API 매칭 성공 시 API에서 가져온 상품명 사용
-                    extracted_product_name = result.get("product_name")                    
-
+                    shopping_rank = result.get("rank")
+                    shopping_product_name = result.get("product_name")
+                    shopping_nvmid = result.get("nvmid")
                     
-                    # product_id가 있으면 product_mid 업데이트 (스마트스토어 URL의 경우)
-                    product_id = result.get("product_id")
-                    if product_id:
-                        extracted_product_mid = product_id
+                    # nvmid가 있으면 price_comparison_mid에 저장, 없으면 NULL로 설정
+                    if shopping_nvmid:
+                        extracted_price_comparison_mid = shopping_nvmid
+                    else:
+                        # 매칭 성공했지만 nvmid가 없으면 NULL로 설정
+                        extracted_price_comparison_mid = None
+                else:
+                    # 매칭 실패 시 price_comparison_mid를 NULL로 설정
+                    extracted_price_comparison_mid = None
+            
+            # store_url 처리 (shopping_url 매칭 여부와 관계없이)
+            if advertisement.store_url:
+                result = get_rank_by_keyword_and_url(advertisement.main_keyword, advertisement.store_url)
+                
+                if result.get("success"):
+                    store_rank = result.get("rank")
+                    store_product_name = result.get("product_name")
+                    store_nvmid = result.get("nvmid")
                     
-                    # nvmid가 있으면 price_comparison_mid 업데이트 (쇼핑 URL의 경우)
-                    nvmid = result.get("nvmid")
-                    if nvmid:
-                        extracted_price_comparison_mid = nvmid
+                    # nvmid가 있으면 product_mid에 저장, 없으면 NULL로 설정
+                    if store_nvmid:
+                        extracted_product_mid = store_nvmid
+                    else:
+                        # 매칭 성공했지만 nvmid가 없으면 NULL로 설정
+                        extracted_product_mid = None
+                else:
+                    # 매칭 실패 시 product_mid를 NULL로 설정
+                    extracted_product_mid = None
+            
+            # 순위 및 상품명 결정 (shopping_url 우선, 둘 다 매칭되면 shopping_url의 순위 사용)
+            if shopping_rank is not None:
+                extracted_rank = shopping_rank
+                if shopping_product_name:
+                    extracted_product_name = shopping_product_name
+            elif store_rank is not None:
+                extracted_rank = store_rank
+                if store_product_name:
+                    extracted_product_name = store_product_name
+            
+            # store_url만 있을 때: price_comparison_mid를 None으로 설정
+            if advertisement.store_url and not advertisement.shopping_url:
+                extracted_price_comparison_mid = None
+            
+            # shopping_url만 있을 때: product_mid를 None으로 설정
+            if advertisement.shopping_url and not advertisement.store_url:
+                extracted_product_mid = None
+                
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
@@ -617,12 +655,14 @@ async def create_advertisement(
             # URL 추출 실패해도 광고 등록은 계속 진행
     
     # store_url에서 product_mid 추출 (매칭 성공 여부와 관계없이)
+    # 매칭된 nvmid가 없을 때만 URL에서 직접 추출
     if advertisement.store_url and not extracted_product_mid:
-        match = re.search(r'smartstore\.naver\.com/[^/]+/products/(\d+)', advertisement.store_url)
+        match = re.search(r'(?:smartstore|brand)\.naver\.com/[^/]+/products/(\d+)', advertisement.store_url)
         if match:
             extracted_product_mid = match.group(1)
     
     # shopping_url에서 price_comparison_mid 추출 (매칭 성공 여부와 관계없이)
+    # 매칭된 nvmid가 없을 때만 URL에서 직접 추출
     if advertisement.shopping_url and not extracted_price_comparison_mid:
         match = re.search(r'catalog/(\d+)', advertisement.shopping_url)
         if match:
