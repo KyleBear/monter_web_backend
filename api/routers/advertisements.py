@@ -3,6 +3,7 @@
 광고 조회, 생성, 수정, 삭제, 연장
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, and_
 from pydantic import BaseModel
@@ -15,6 +16,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 from io import StringIO
 import re
+import csv
 
 router = APIRouter()
 
@@ -410,6 +412,128 @@ async def get_advertisements(
             "ended": ended_count
         }
     }
+
+
+@router.get("/export")
+async def export_advertisements(
+    search_type: str = Query("all"),
+    search_keyword: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    광고 목록 CSV 내보내기 API
+    - 검색 기능 지원 (No, 상품명, 아이디, 키워드, 프로덕트ID, 벤더ID)
+    - 상태별 필터링 (정상/오류/대기/종료예정/종료)
+    - 권한 기반 필터링
+    - 페이지네이션 없이 모든 결과 내보내기
+    """
+    # 기본 쿼리 (JOIN users_admin)
+    query = db.query(AdvertisementsAdmin, UsersAdmin).join(
+        UsersAdmin, AdvertisementsAdmin.user_id == UsersAdmin.user_id
+    )
+    
+    # 권한에 따른 조회 범위 필터링 (가장 먼저 적용)
+    query = _apply_advertisement_permission_filter(query, current_user, db)
+    
+    # 상태 필터링
+    if status:
+        query = query.filter(AdvertisementsAdmin.status == status)
+    
+    # 검색 필터링
+    if search_keyword:
+        if search_type == "no":
+            try:
+                ad_id = int(search_keyword)
+                query = query.filter(AdvertisementsAdmin.ad_id == ad_id)
+            except ValueError:
+                query = query.filter(False)  # 숫자가 아니면 결과 없음
+        elif search_type == "product_name":
+            query = query.filter(AdvertisementsAdmin.product_name.contains(search_keyword))
+        elif search_type == "userid":
+            query = query.filter(UsersAdmin.username.contains(search_keyword))
+        elif search_type == "keyword":
+            query = query.filter(AdvertisementsAdmin.main_keyword.contains(search_keyword))
+        elif search_type == "product_id":
+            query = query.filter(AdvertisementsAdmin.product_mid.contains(search_keyword))
+        elif search_type == "vendor_id":
+            query = query.filter(AdvertisementsAdmin.price_comparison_mid.contains(search_keyword))
+        elif search_type == "all":
+            query = query.filter(
+                or_(
+                    AdvertisementsAdmin.product_name.contains(search_keyword),
+                    UsersAdmin.username.contains(search_keyword),
+                    AdvertisementsAdmin.main_keyword.contains(search_keyword),
+                    AdvertisementsAdmin.product_mid.contains(search_keyword),
+                    AdvertisementsAdmin.price_comparison_mid.contains(search_keyword)
+                )
+            )
+    
+    # 모든 광고 조회 (페이지네이션 없음)
+    results = query.order_by(AdvertisementsAdmin.created_at.desc()).all()
+    
+    # CSV 생성
+    output = StringIO()
+    writer = csv.writer(output)
+    
+    # 헤더
+    writer.writerow([
+        "광고ID",
+        "상태",
+        "메인키워드",
+        "상품명",
+        "상품MID",
+        "가격비교MID",
+        "순위",
+        "스마트스토어URL",
+        "쇼핑URL",
+        "작업일수",
+        "시작일",
+        "종료일",
+        "소유자",
+        "소속",
+        "생성일시"
+    ])
+    
+    # 데이터 행
+    for ad, user in results:
+        # HTML 태그 제거 (상품명에서)
+        product_name = ad.product_name or ""
+        if product_name:
+            product_name = re.sub(r'<[^>]+>', '', product_name)
+            product_name = product_name.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&#39;', "'").replace('&nbsp;', ' ')
+            product_name = product_name.strip()
+        
+        writer.writerow([
+            ad.ad_id or "",
+            ad.status or "",
+            ad.main_keyword or "",
+            product_name,
+            ad.product_mid or "",
+            ad.price_comparison_mid or "",
+            ad.rank or "",
+            ad.store_url or "",
+            ad.shopping_url or "",
+            ad.work_days or "",
+            ad.start_date.strftime("%Y-%m-%d") if ad.start_date else "",
+            ad.end_date.strftime("%Y-%m-%d") if ad.end_date else "",
+            user.username or "",
+            ad.affiliation or "",
+            ad.created_at.strftime("%Y-%m-%d %H:%M:%S") if ad.created_at else ""
+        ])
+    
+    # UTF-8 BOM 추가 (한글 호환성)
+    csv_data = output.getvalue()
+    csv_bytes = '\ufeff' + csv_data
+    
+    return Response(
+        content=csv_bytes.encode('utf-8-sig'),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": "attachment; filename=advertisements_export.csv"
+        }
+    )
 
 
 @router.get("/{ad_id}")

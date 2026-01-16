@@ -12,6 +12,7 @@ from utils.auth_helpers import get_current_user
 from datetime import date, datetime, timedelta
 import csv
 import io
+import re
 
 router = APIRouter()
 
@@ -318,6 +319,7 @@ async def get_settlements_by_date(
     settlement_type: Optional[str] = Query(None),
     agency_user_id: Optional[int] = Query(None),
     advertiser_user_id: Optional[int] = Query(None),
+    search_keyword: Optional[str] = Query(None, description="검색어 (상품명, 대행사명, 광고주명, 작업수행자명)"),
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -327,6 +329,7 @@ async def get_settlements_by_date(
     - start_date와 end_date는 필수 파라미터
     - 정산 유형별 필터링
     - 대행사/광고주 필터링
+    - 검색어 필터링 (상품명, 대행사명, 광고주명, 작업수행자명)
     - 계급구조와 소속 기반 필터링
     - 통계 정보 포함
     """
@@ -357,6 +360,40 @@ async def get_settlements_by_date(
     # 광고주 필터링
     if advertiser_user_id:
         query = query.filter(SettlementAdmin.advertiser_user_id == advertiser_user_id)
+    
+    # 검색어 필터링 (SQL LIKE 검색)
+    if search_keyword:
+        search_keyword_trimmed = search_keyword.strip()
+        if search_keyword_trimmed:
+            # 상품명 검색 (SettlementAdmin 테이블에 직접 있음)
+            # 대행사명, 광고주명, 작업수행자명 검색을 위한 JOIN
+            # 각각 별도의 alias로 JOIN
+            from sqlalchemy.orm import aliased
+            
+            agency_alias = aliased(UsersAdmin)
+            advertiser_alias = aliased(UsersAdmin)
+            performed_by_alias = aliased(UsersAdmin)
+            
+            # LEFT JOIN으로 연결
+            query = query.outerjoin(
+                agency_alias, 
+                SettlementAdmin.agency_user_id == agency_alias.user_id
+            ).outerjoin(
+                advertiser_alias,
+                SettlementAdmin.advertiser_user_id == advertiser_alias.user_id
+            ).outerjoin(
+                performed_by_alias,
+                SettlementAdmin.performed_by_user_id == performed_by_alias.user_id
+            )
+            
+            # LIKE 검색 조건 (상품명, 대행사명, 광고주명, 작업수행자명)
+            search_conditions = [
+                SettlementAdmin.ad_product_nm.like(f"%{search_keyword_trimmed}%"),  # 상품명
+                agency_alias.username.like(f"%{search_keyword_trimmed}%"),  # 대행사명
+                advertiser_alias.username.like(f"%{search_keyword_trimmed}%"),  # 광고주명
+                performed_by_alias.username.like(f"%{search_keyword_trimmed}%")  # 작업수행자명
+            ]
+            query = query.filter(or_(*search_conditions))
     
     # 모든 정산 로그 조회 (페이지네이션 없음 - 날짜별 상세조회)
     settlements = query.order_by(SettlementAdmin.created_at.desc()).all()
@@ -534,6 +571,7 @@ async def download_settlements_csv(
         "광고주명",
         "광고ID",
         "상품명",
+        "상품MID",
         "광고소유자",
         "작업수행자ID",
         "작업수행자명",
@@ -578,13 +616,26 @@ async def download_settlements_csv(
         # 광고 상품명은 정산 로그에 직접 저장된 ad_product_nm 사용
         product_name = settlement.ad_product_nm if hasattr(settlement, 'ad_product_nm') else None
         
-        # 광고 소유자 username 조회 (ad_id가 있는 경우에만)
+        # HTML 태그 제거 (상품명에서)
+        if product_name:
+            # 모든 HTML 태그 제거 (<tag> 또는 </tag> 형태)
+            product_name = re.sub(r'<[^>]+>', '', product_name)
+            # HTML 엔티티 디코딩 (선택적)
+            product_name = product_name.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&#39;', "'").replace('&nbsp;', ' ')
+            # 공백 정리
+            product_name = product_name.strip()
+        
+        # 광고 소유자 username 및 상품 MID 조회 (ad_id가 있는 경우에만)
         advertisement_owner_username = None
+        product_mid = None
         if settlement.ad_id:
             advertisement = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == settlement.ad_id).first()
-            if advertisement and advertisement.user_id:
-                ad_owner = db.query(UsersAdmin).filter(UsersAdmin.user_id == advertisement.user_id).first()
-                advertisement_owner_username = ad_owner.username if ad_owner else None
+            if advertisement:
+                if advertisement.user_id:
+                    ad_owner = db.query(UsersAdmin).filter(UsersAdmin.user_id == advertisement.user_id).first()
+                    advertisement_owner_username = ad_owner.username if ad_owner else None
+                # 상품 MID 가져오기
+                product_mid = advertisement.product_mid
         
         # 정산유형 한글 변환
         settlement_type_kr = {
@@ -603,6 +654,7 @@ async def download_settlements_csv(
             advertiser_username or "",
             settlement.ad_id or "",
             product_name or "",
+            product_mid or "",
             advertisement_owner_username or "",
             settlement.performed_by_user_id or "",
             performed_by_username or "",
