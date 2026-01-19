@@ -719,6 +719,8 @@ async def create_advertisement(
             store_rank = None
             store_product_name = None
             store_nvmid = None
+            is_openmall = False
+            is_basemall = False
             
             # shopping_url 우선 시도
             if advertisement.shopping_url:
@@ -742,8 +744,81 @@ async def create_advertisement(
                     # 매칭 실패 시 price_comparison_mid를 NULL로 설정
                     extracted_price_comparison_mid = None
             
-            # store_url 처리 (shopping_url 매칭 여부와 관계없이)
+            ### 오픈몰 및 basemall 선처리 로직 ###
+            # store_url이 오픈마켓 또는 기본몰인 경우 선처리
             if advertisement.store_url:
+                store_url_lower = advertisement.store_url.lower()
+                
+                # 오픈마켓 도메인 체크
+                openmall_domains = ['coupang.com', 'auction.co.kr', '11st.co.kr', 'gmarket.co.kr']
+                is_openmall = any(domain in store_url_lower for domain in openmall_domains)
+                
+                # 일반 쇼핑몰 도메인 체크
+                basemall_domains = ['rental-zon.com', 'hkoa1.com', 'funart.co.kr']
+                is_basemall = any(domain in store_url_lower for domain in basemall_domains)
+                
+                # 오픈마켓 URL: openmall 크롤링으로 상품명만 추출
+                if is_openmall:
+                    import os
+                    import sys
+                    current_dir = os.path.dirname(os.path.abspath(__file__))
+                    project_root = os.path.dirname(os.path.dirname(current_dir))
+                    if project_root not in sys.path:
+                        sys.path.insert(0, project_root)
+                    
+                    try:
+                        from openmall import get_product_name as get_openmall_product_name
+                        store_product_name = get_openmall_product_name(advertisement.store_url)
+                        if store_product_name:
+                            # "Access Denied" 필터링
+                            if store_product_name.lower() not in ["access denied", "접근 거부", "forbidden"]:
+                                extracted_product_name = store_product_name
+                            else:
+                                store_product_name = None
+                        else:
+                            store_product_name = None
+                    except Exception as e:
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.error(f"openmall 크롤링 실패: {e}", exc_info=True)
+                        store_product_name = None
+                    
+                    # 오픈마켓은 순위 조회 불가
+                    store_rank = None
+                    store_nvmid = None
+                    extracted_product_mid = None
+                
+                # 일반 쇼핑몰 URL: basemall 크롤링으로 상품명만 추출
+                elif is_basemall:
+                    import os
+                    import sys
+                    current_dir = os.path.dirname(os.path.abspath(__file__))
+                    project_root = os.path.dirname(os.path.dirname(current_dir))
+                    if project_root not in sys.path:
+                        sys.path.insert(0, project_root)
+                    
+                    try:
+                        from basemall_url import get_product_name as get_basemall_product_name
+                        store_product_name = get_basemall_product_name(advertisement.store_url)
+                        if store_product_name:
+                            extracted_product_name = store_product_name
+                        else:
+                            store_product_name = None
+                    except Exception as e:
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.error(f"basemall 크롤링 실패: {e}", exc_info=True)
+                        store_product_name = None
+                    
+                    # 일반 쇼핑몰은 순위 조회 불가
+                    store_rank = None
+                    store_nvmid = None
+                    extracted_product_mid = None
+            ###
+            
+            # store_url 처리 (shopping_url 매칭 여부와 관계없이)
+            # 오픈마켓/기본몰이 아닌 경우에만 실행
+            if advertisement.store_url and not is_openmall and not is_basemall:
                 result = get_rank_by_keyword_and_url(advertisement.main_keyword, advertisement.store_url)
                 
                 if result.get("success"):
