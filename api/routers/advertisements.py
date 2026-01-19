@@ -1254,34 +1254,110 @@ async def update_advertisement(
     
     # store_url 저장 및 product_mid 추출
     if advertisement.store_url is not None:
-        ad.store_url = advertisement.store_url
-        # URL에서 마지막 숫자 추출하여 product_mid로 저장
-        if advertisement.store_url:
-            match = re.search(r'/(\d+)(?:[/?#]|$)', advertisement.store_url)
-            if match:
-                ad.product_mid = match.group(1)
-            else:
-                # 숫자를 찾을 수 없으면 에러 처리
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="store_url에서 상품 ID를 추출할 수 없습니다."
-                )
+        # 빈 문자열 처리
+        if advertisement.store_url and advertisement.store_url.strip():
+            ad.store_url = advertisement.store_url.strip()
+            store_url_lower = advertisement.store_url.lower()
+            
+            # 오픈마켓 도메인 체크
+            openmall_domains = ['coupang.com', 'auction.co.kr', '11st.co.kr', 'gmarket.co.kr']
+            is_openmall = any(domain in store_url_lower for domain in openmall_domains)
+            
+            # 일반 쇼핑몰 도메인 체크
+            basemall_domains = ['rental-zon.com', 'hkoa1.com', 'funart.co.kr']
+            is_basemall = any(domain in store_url_lower for domain in basemall_domains)
+            
+            # 네이버 스토어 URL 체크
+            is_smartstore = "smartstore.naver.com" in store_url_lower or "brand.naver.com" in store_url_lower
+            
+            product_mid = None
+            
+            # 네이버 스마트스토어/브랜드스토어: product_id 추출
+            if is_smartstore:
+                match = re.search(r'(?:smartstore|brand)\.naver\.com/[^/]+/products/(\d+)', advertisement.store_url)
+                if match:
+                    product_mid = match.group(1)
+            
+            # 쿠팡: itemId 우선, 없으면 products ID
+            elif "coupang.com" in store_url_lower:
+                match = re.search(r'itemId=(\d+)', advertisement.store_url)
+                if match:
+                    product_mid = match.group(1)
+                else:
+                    match = re.search(r'coupang\.com/vp/products/(\d+)', advertisement.store_url)
+                    if match:
+                        product_mid = match.group(1)
+            
+            # 옥션: itemno 추출
+            elif "auction.co.kr" in store_url_lower:
+                match = re.search(r'itemno=([A-Z0-9]+)', advertisement.store_url, re.IGNORECASE)
+                if match:
+                    product_mid = match.group(1)
+            
+            # 11번가: products ID 추출
+            elif "11st.co.kr" in store_url_lower:
+                match = re.search(r'11st\.co\.kr/products/(\d+)', advertisement.store_url)
+                if match:
+                    product_mid = match.group(1)
+            
+            # G마켓: goodscode 또는 item-no 추출
+            elif "gmarket.co.kr" in store_url_lower:
+                match = re.search(r'goodscode=(\d+)', advertisement.store_url)
+                if not match:
+                    match = re.search(r'item-no=(\d+)', advertisement.store_url)
+                if match:
+                    product_mid = match.group(1)
+            
+            # 일반적인 마지막 숫자 (폴백)
+            if not product_mid:
+                match = re.search(r'/(\d+)(?:[/?#]|$)', advertisement.store_url)
+                if match:
+                    product_mid = match.group(1)
+            
+            # product_mid 저장 (추출 실패 시 None, 에러 발생하지 않음)
+            ad.product_mid = product_mid
+            if not product_mid and not is_openmall and not is_basemall:
+                # 오픈마켓이나 일반 쇼핑몰이 아닌 경우에만 경고
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"store_url에서 product_mid를 추출할 수 없습니다: {advertisement.store_url}")
+        else:
+            # 빈 문자열이면 None으로 설정
+            ad.store_url = None
+            ad.product_mid = None
     
     # shopping_url 저장 및 price_comparison_mid 추출
     if advertisement.shopping_url is not None:
-        ad.shopping_url = advertisement.shopping_url
-        # 쇼핑 URL에서 nvmid 추출하여 price_comparison_mid로 저장
-        if advertisement.shopping_url:
-            # 쇼핑 URL 패턴: https://search.shopping.naver.com/catalog/10639139232
-            match = re.search(r'catalog/(\d+)', advertisement.shopping_url)
-            if match:
-                ad.price_comparison_mid = match.group(1)
-            else:
-                # 숫자를 찾을 수 없으면 에러 처리
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="shopping_url에서 nvmid를 추출할 수 없습니다."
-                )
+        # 빈 문자열 처리
+        if advertisement.shopping_url and advertisement.shopping_url.strip():
+            ad.shopping_url = advertisement.shopping_url.strip()
+            shopping_url_lower = advertisement.shopping_url.lower()
+            
+            # 네이버 쇼핑 URL 체크
+            is_naver_shopping = "search.shopping.naver.com/catalog" in shopping_url_lower
+            
+            price_comparison_mid = None
+            
+            # 네이버 쇼핑 URL: nvmid 추출
+            if is_naver_shopping:
+                match = re.search(r'catalog/(\d+)', advertisement.shopping_url)
+                if match:
+                    price_comparison_mid = match.group(1)
+            
+            # 오픈마켓이나 일반 쇼핑몰 URL은 price_comparison_mid 추출 불가 (순위 조회 불가)
+            # price_comparison_mid는 None으로 유지
+            
+            # price_comparison_mid 저장 (추출 실패 시 None, 에러 발생하지 않음)
+            ad.price_comparison_mid = price_comparison_mid
+            if not price_comparison_mid and is_naver_shopping:
+                # 네이버 쇼핑 URL인데 추출 실패한 경우에만 경고
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"shopping_url에서 nvmid를 추출할 수 없습니다: {advertisement.shopping_url}")
+        else:
+            # 빈 문자열이면 None으로 설정
+            ad.shopping_url = None
+            ad.price_comparison_mid = None
     
     # 메모 변경
     if advertisement.memo is not None:

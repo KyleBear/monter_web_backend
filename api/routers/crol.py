@@ -737,67 +737,182 @@ def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Opt
             store_product_name = None
             store_nvmid = None
             
+            # 오픈마켓 및 일반 쇼핑몰 도메인 정의
+            openmall_domains = ['coupang.com', 'auction.co.kr', '11st.co.kr', 'gmarket.co.kr']
+            basemall_domains = ['rental-zon.com', 'hkoa1.com', 'funart.co.kr']
+            
             # shopping_url 우선 시도
             if shopping_url:
-                logger.info(f"Ad ID {ad_id}: shopping URL로 순위 조회 시도: {shopping_url}")
-                result = get_rank_by_keyword_and_url(ad.main_keyword, shopping_url)
+                shopping_url_lower = shopping_url.lower()
                 
-                if result.get("success"):
-                    shopping_rank = result.get("rank")
-                    shopping_product_name = result.get("product_name")
-                    shopping_nvmid = result.get("nvmid")
-                    
-                    # SQLAlchemy NULL 처리: 빈 문자열이나 None을 명시적으로 None으로 변환
-                    if shopping_product_name is not None and not shopping_product_name.strip():
+                # 오픈마켓 URL 체크
+                is_openmall_shopping = any(domain in shopping_url_lower for domain in openmall_domains)
+                
+                # 일반 쇼핑몰 URL 체크
+                is_basemall_shopping = any(domain in shopping_url_lower for domain in basemall_domains)
+                
+                # 네이버 쇼핑 URL 체크
+                is_naver_shopping = "search.shopping.naver.com/catalog" in shopping_url_lower
+                
+                # 오픈마켓 URL: openmall 크롤링으로 상품명만 추출
+                if is_openmall_shopping:
+                    logger.info(f"Ad ID {ad_id}: shopping_url이 오픈마켓 URL, openmall 크롤링으로 상품명 추출: {shopping_url}")
+                    try:
+                        current_dir = os.path.dirname(os.path.abspath(__file__))
+                        project_root = os.path.dirname(os.path.dirname(current_dir))
+                        if project_root not in sys.path:
+                            sys.path.insert(0, project_root)
+                        from openmall import get_product_name as get_openmall_product_name
+                        shopping_product_name = get_openmall_product_name(shopping_url)
+                        if shopping_product_name:
+                            # "Access Denied" 필터링
+                            if shopping_product_name.lower() not in ["access denied", "접근 거부", "forbidden"]:
+                                logger.info(f"✓ Ad ID {ad_id}: openmall 크롤링으로 상품명 추출 성공: {shopping_product_name[:50]}...")
+                            else:
+                                logger.warning(f"Ad ID {ad_id}: 봇 차단 감지: {shopping_product_name}")
+                                shopping_product_name = None
+                        else:
+                            shopping_product_name = None
+                    except Exception as e:
+                        logger.error(f"Ad ID {ad_id}: openmall 크롤링 실패: {e}", exc_info=True)
                         shopping_product_name = None
                     
-                    logger.info(f"Ad ID {ad_id}: shopping URL 매칭 성공 - rank={shopping_rank}, product_name={shopping_product_name}, nvmid={shopping_nvmid}")
+                    shopping_rank = None
+                    shopping_nvmid = None
+                
+                # 일반 쇼핑몰 URL: basemall 크롤링으로 상품명만 추출
+                elif is_basemall_shopping:
+                    logger.info(f"Ad ID {ad_id}: shopping_url이 일반 쇼핑몰 URL, basemall 크롤링으로 상품명 추출: {shopping_url}")
+                    try:
+                        current_dir = os.path.dirname(os.path.abspath(__file__))
+                        project_root = os.path.dirname(os.path.dirname(current_dir))
+                        if project_root not in sys.path:
+                            sys.path.insert(0, project_root)
+                        from basemall_url import get_product_name as get_basemall_product_name
+                        shopping_product_name = get_basemall_product_name(shopping_url)
+                        if shopping_product_name:
+                            logger.info(f"✓ Ad ID {ad_id}: basemall 크롤링으로 상품명 추출 성공: {shopping_product_name[:50]}...")
+                        else:
+                            shopping_product_name = None
+                    except Exception as e:
+                        logger.error(f"Ad ID {ad_id}: basemall 크롤링 실패: {e}", exc_info=True)
+                        shopping_product_name = None
                     
-                    # nvmid가 있으면 price_comparison_mid 업데이트, 없으면 NULL로 설정
-                    if shopping_nvmid:
-                        ad.price_comparison_mid = shopping_nvmid
-                        logger.info(f"✓ Ad ID {ad_id}: price_comparison_mid 업데이트 완료 (shopping URL 매칭): {shopping_nvmid}")
-                    # else:
-                    #     # 매칭 성공했지만 nvmid가 없으면 NULL로 설정
-                    #     ad.price_comparison_mid = None
-                    #     logger.info(f"✓ Ad ID {ad_id}: shopping URL 매칭 성공했지만 nvmid가 없어 price_comparison_mid를 NULL로 설정")
-                # else:
-                #     # 매칭 실패 시 price_comparison_mid를 NULL로 설정
-                #     ad.price_comparison_mid = None
-                #     error = result.get("error", "알 수 없는 오류")
-                #     logger.warning(f"Ad ID {ad_id}: shopping URL로 순위 조회 실패: {error}, price_comparison_mid를 NULL로 설정")
+                    shopping_rank = None
+                    shopping_nvmid = None
+                
+                # 네이버 쇼핑 URL: 기존 로직 (순위 조회)
+                elif is_naver_shopping:
+                    logger.info(f"Ad ID {ad_id}: shopping URL로 순위 조회 시도: {shopping_url}")
+                    result = get_rank_by_keyword_and_url(ad.main_keyword, shopping_url)
+                    
+                    if result.get("success"):
+                        shopping_rank = result.get("rank")
+                        shopping_product_name = result.get("product_name")
+                        shopping_nvmid = result.get("nvmid")
+                        
+                        # SQLAlchemy NULL 처리: 빈 문자열이나 None을 명시적으로 None으로 변환
+                        if shopping_product_name is not None and not shopping_product_name.strip():
+                            shopping_product_name = None
+                        
+                        logger.info(f"Ad ID {ad_id}: shopping URL 매칭 성공 - rank={shopping_rank}, product_name={shopping_product_name}, nvmid={shopping_nvmid}")
+                        
+                        # nvmid가 있으면 price_comparison_mid 업데이트, 없으면 NULL로 설정
+                        if shopping_nvmid:
+                            ad.price_comparison_mid = shopping_nvmid
+                            logger.info(f"✓ Ad ID {ad_id}: price_comparison_mid 업데이트 완료 (shopping URL 매칭): {shopping_nvmid}")
+                else:
+                    logger.warning(f"Ad ID {ad_id}: 지원하지 않는 shopping_url 형식: {shopping_url}")
+                    shopping_rank = None
+                    shopping_product_name = None
+                    shopping_nvmid = None
             
             # store_url 처리 (shopping_url 매칭 여부와 관계없이)
             if store_url:
-                logger.info(f"Ad ID {ad_id}: store URL로 순위 조회 시도: {store_url}")
+                logger.info(f"Ad ID {ad_id}: store URL 처리 시작: {store_url}")
+                
+                store_url_lower = store_url.lower()
+                
+                # 오픈마켓 URL 체크
+                is_openmall_store = any(domain in store_url_lower for domain in openmall_domains)
+                
+                # 일반 쇼핑몰 URL 체크
+                is_basemall_store = any(domain in store_url_lower for domain in basemall_domains)
                 
                 # smartstore 또는 brandstore URL인지 확인
-                is_smartstore_url = False
-                if store_url:
-                    url_lower = store_url.lower()
-                    if "smartstore.naver.com" in url_lower or "brand.naver.com" in url_lower:
-                        is_smartstore_url = True
+                is_smartstore_url = "smartstore.naver.com" in store_url_lower or "brand.naver.com" in store_url_lower
                 
-                result = get_rank_by_keyword_and_url(ad.main_keyword, store_url)
-                
-                if result.get("success"):
-                    store_rank = result.get("rank")
-                    store_product_name = result.get("product_name")
-                    store_nvmid = result.get("nvmid")
-                    
-                    # SQLAlchemy NULL 처리: 빈 문자열이나 None을 명시적으로 None으로 변환
-                    if store_product_name is not None and not store_product_name.strip():
+                # 오픈마켓 URL: openmall 크롤링으로 상품명만 추출
+                if is_openmall_store:
+                    logger.info(f"Ad ID {ad_id}: store_url이 오픈마켓 URL, openmall 크롤링으로 상품명 추출: {store_url}")
+                    try:
+                        current_dir = os.path.dirname(os.path.abspath(__file__))
+                        project_root = os.path.dirname(os.path.dirname(current_dir))
+                        if project_root not in sys.path:
+                            sys.path.insert(0, project_root)
+                        from openmall import get_product_name as get_openmall_product_name
+                        store_product_name = get_openmall_product_name(store_url)
+                        if store_product_name:
+                            # "Access Denied" 필터링
+                            if store_product_name.lower() not in ["access denied", "접근 거부", "forbidden"]:
+                                logger.info(f"✓ Ad ID {ad_id}: openmall 크롤링으로 상품명 추출 성공: {store_product_name[:50]}...")
+                            else:
+                                logger.warning(f"Ad ID {ad_id}: 봇 차단 감지: {store_product_name}")
+                                store_product_name = None
+                        else:
+                            store_product_name = None
+                    except Exception as e:
+                        logger.error(f"Ad ID {ad_id}: openmall 크롤링 실패: {e}", exc_info=True)
                         store_product_name = None
                     
-                    logger.info(f"Ad ID {ad_id}: store URL 매칭 성공 - rank={store_rank}, product_name={store_product_name}, nvmid={store_nvmid}")
+                    # 오픈마켓은 순위 조회 불가
+                    store_rank = None
+                    store_nvmid = None
+                
+                # 일반 쇼핑몰 URL: basemall 크롤링으로 상품명만 추출
+                elif is_basemall_store:
+                    logger.info(f"Ad ID {ad_id}: store_url이 일반 쇼핑몰 URL, basemall 크롤링으로 상품명 추출: {store_url}")
+                    try:
+                        current_dir = os.path.dirname(os.path.abspath(__file__))
+                        project_root = os.path.dirname(os.path.dirname(current_dir))
+                        if project_root not in sys.path:
+                            sys.path.insert(0, project_root)
+                        from basemall_url import get_product_name as get_basemall_product_name
+                        store_product_name = get_basemall_product_name(store_url)
+                        if store_product_name:
+                            logger.info(f"✓ Ad ID {ad_id}: basemall 크롤링으로 상품명 추출 성공: {store_product_name[:50]}...")
+                        else:
+                            store_product_name = None
+                    except Exception as e:
+                        logger.error(f"Ad ID {ad_id}: basemall 크롤링 실패: {e}", exc_info=True)
+                        store_product_name = None
                     
-                    # nvmid가 있으면 product_mid 업데이트
-                    if store_nvmid:
-                        ad.product_mid = store_nvmid
-                        logger.info(f"✓ Ad ID {ad_id}: product_mid 업데이트 완료 (store URL 매칭): {store_nvmid}")
-                    else:
-                        # 매칭 성공했지만 nvmid가 없으면 product_url_copy.py를 통해서 nvmid와 product_name 추출 시도
-                        if is_smartstore_url:
+                    # 일반 쇼핑몰은 순위 조회 불가
+                    store_rank = None
+                    store_nvmid = None
+                
+                # 네이버 스토어 URL: 기존 로직 (순위 조회)
+                elif is_smartstore_url:
+                    logger.info(f"Ad ID {ad_id}: 네이버 스토어 URL, 순위 조회 시도: {store_url}")
+                    result = get_rank_by_keyword_and_url(ad.main_keyword, store_url)
+                    
+                    if result.get("success"):
+                        store_rank = result.get("rank")
+                        store_product_name = result.get("product_name")
+                        store_nvmid = result.get("nvmid")
+                        
+                        # SQLAlchemy NULL 처리: 빈 문자열이나 None을 명시적으로 None으로 변환
+                        if store_product_name is not None and not store_product_name.strip():
+                            store_product_name = None
+                        
+                        logger.info(f"Ad ID {ad_id}: store URL 매칭 성공 - rank={store_rank}, product_name={store_product_name}, nvmid={store_nvmid}")
+                        
+                        # nvmid가 있으면 product_mid 업데이트
+                        if store_nvmid:
+                            ad.product_mid = store_nvmid
+                            logger.info(f"✓ Ad ID {ad_id}: product_mid 업데이트 완료 (store URL 매칭): {store_nvmid}")
+                        else:
+                            # 매칭 성공했지만 nvmid가 없으면 product_url_copy.py를 통해서 nvmid와 product_name 추출 시도
                             try:
                                 from api.routers.product_url_copy import get_nvmid_from_url
                                 product_nvmid, product_name_from_url = get_nvmid_from_url(store_url, verbose=False)
@@ -815,12 +930,8 @@ def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Opt
                             except Exception as e:
                                 logger.warning(f"Ad ID {ad_id}: product_url_copy.py 호출 중 오류: {str(e)}")
                                 ad.product_mid = None
-                        else:
-                            ad.product_mid = None
-                            logger.info(f"✓ Ad ID {ad_id}: 매칭된 nvmid가 없어 product_mid를 NULL로 설정")
-                else:
-                    # 매칭 실패 시 product_url_copy.py를 통해서 nvmid와 product_name 추출 시도 (smartstore/brandstore URL인 경우만)
-                    if is_smartstore_url:
+                    else:
+                        # 매칭 실패 시 product_url_copy.py를 통해서 nvmid와 product_name 추출 시도
                         try:
                             from api.routers.product_url_copy import get_nvmid_from_url
                             product_nvmid, product_name_from_url = get_nvmid_from_url(store_url, verbose=False)
@@ -838,10 +949,16 @@ def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Opt
                         except Exception as e:
                             logger.warning(f"Ad ID {ad_id}: product_url_copy.py 호출 중 오류: {str(e)}, product_mid를 NULL로 설정")
                             ad.product_mid = None
-                    else:
-                        # 매칭 실패 시에도 nvmid가 없으면 null 처리
-                        ad.product_mid = None
-                        logger.info(f"✓ Ad ID {ad_id}: 매칭 실패로 product_mid를 NULL로 설정")
+                        
+                        store_rank = None
+                        store_nvmid = None
+                
+                # 지원하지 않는 URL 형식
+                else:
+                    logger.warning(f"Ad ID {ad_id}: 지원하지 않는 store_url 형식: {store_url}")
+                    store_rank = None
+                    store_product_name = None
+                    store_nvmid = None
             
             # 순위 및 상품명 결정 (shopping_url 우선, 둘 다 매칭되면 shopping_url의 순위 사용)
             if shopping_rank is not None:
