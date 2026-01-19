@@ -9,11 +9,10 @@ from itertools import combinations
 from urllib.parse import quote, urlparse
 from dotenv import load_dotenv
 import json
+import sys
+import os
 # .env 파일 로드
 load_dotenv()
-
-# openmall.py와 basemall_url.py에서 함수 import (순환 import 방지를 위해 지연 import)
-# 함수 내부에서 필요할 때 import하도록 처리
 # 순위 집계는 DB에 저장 안됩니다. 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,13 +30,6 @@ API_URL = "https://openapi.naver.com/v1/search/shop.json"
 
 # 
 # 
-
-# 키워드 와 https://smartstore.naver.com/loneque/products/6516355636 url 을 입력하면 이렇게 뒤의 product_id 를 매칭해서 해당 상품을 크롤링 할 수 있어야합니다. 
-# https://search.shopping.naver.com/catalog/10639139232
-# 칫솔걸이 공중부양
-# https://smartstore.naver.com/mmths/products/11488021966
-# https://search.shopping.naver.com/catalog/89032532331 이렇게 쇼핑 url 을 주면 뒤의 nvmid 를 통해 해당 url 의 nvmid 를 통해 순위를 매칭 별도 메서드임
-# 둘다 open api 를 사용한 결과를 통해 매칭합니다. nvmid 는 링크뒤의 일치여부, productid 는 결과의 다이렉트 일치여부를 통해서 
 
 # 만약 productID 가 다이렉트이명 productid 로 매칭
 # 가격 비교 순위 productId 로 매칭 = nvmid 로 매칭
@@ -190,6 +182,451 @@ def get_shopping_rank_with_ad_flag(
     except Exception as e:
         logger.error(f"네이버 오픈 API 호출 중 예상치 못한 오류: {e}", exc_info=True)
         raise
+
+
+# ============================================================================
+# 오픈마켓 URL로 네이버 순위 조회 기능
+# ============================================================================
+
+def extract_product_id_from_marketplace_url(marketplace_url: str) -> Dict:
+    """
+    오픈마켓 URL에서 마켓플레이스 타입과 상품 ID 추출 (일반 쇼핑몰 지원 추가)
+    
+    Args:
+        marketplace_url: 오픈마켓 상품 URL
+            누카
+            https://nooka.co.kr/product/detail.html?product_no=60&cate_no=77&display_group=1
+
+            롯데온
+            https://www.lotteon.com/p/product/LO2532029028?sitmNo=LO2532029028_2532029029&ch_no=100065&ch_dtl_no=1000030
+
+            쿠팡
+            https://www.coupang.com/vp/products/8989686766?
+
+            오늘의 집
+            https://store.ohou.se/goods/3679724?
+
+            이마트
+            https://emart.ssg.com/item/itemView.ssg?itemId=1000716250779&siteNo=6001
+
+            G마켓
+            https://item.gmarket.co.kr/Item?goodscode=4254268378
+
+            이마트
+            https://emart.ssg.com/item/itemView.ssg?itemId=1000716250779
+
+    
+    Returns:
+        {
+            "marketplace": str,  # "coupang", "auction", "11st", "gmarket", "general"
+            "product_id": str,   # 추출한 상품 ID (일반 쇼핑몰의 경우 도메인)
+            "domain": str,       # 도메인 (일반 쇼핑몰의 경우)
+            "normalized_url": str,  # 정규화된 URL (매칭용)
+            "error": str or None
+        }
+    """
+    result = {
+        "marketplace": None,
+        "product_id": None,
+        "domain": None,
+        "normalized_url": None,
+        "error": None
+    }
+    
+    url_lower = marketplace_url.lower()
+    
+    # 쿠팡 (네이버 리다이렉트 링크 또는 직접 링크)
+    if "link.coupang.com" in url_lower or "coupang.com" in url_lower:
+        # itemId 파라미터 추출 (우선순위 1)
+        item_id_match = re.search(r'itemId=(\d+)', marketplace_url)
+        # products/(\d+) 패턴 추출 (우선순위 2)
+        product_id_match = re.search(r'coupang\.com/vp/products/(\d+)', marketplace_url)
+        
+        if item_id_match:
+            result["marketplace"] = "coupang"
+            result["product_id"] = item_id_match.group(1)  # itemId 사용
+            result["normalized_url"] = marketplace_url
+        elif product_id_match:
+            result["marketplace"] = "coupang"
+            result["product_id"] = product_id_match.group(1)  # products ID 사용
+            result["normalized_url"] = marketplace_url
+        else:
+            result["error"] = "쿠팡 URL에서 상품 ID를 추출할 수 없습니다"
+        return result
+    
+    # 옥션
+    if "auction.co.kr" in url_lower:
+        match = re.search(r'[?&]itemno=([A-Z0-9]+)', marketplace_url, re.IGNORECASE)
+        if match:
+            result["marketplace"] = "auction"
+            result["product_id"] = match.group(1)
+            result["normalized_url"] = marketplace_url
+        else:
+            result["error"] = "옥션 URL에서 itemno를 추출할 수 없습니다"
+        return result
+    
+    # 11번가
+    if "11st.co.kr" in url_lower:
+        match = re.search(r'11st\.co\.kr/products/(\d+)', marketplace_url, re.IGNORECASE)
+        if match:
+            result["marketplace"] = "11st"
+            result["product_id"] = match.group(1)
+            result["normalized_url"] = marketplace_url
+        else:
+            result["error"] = "11번가 URL에서 상품 ID를 추출할 수 없습니다"
+        return result
+    
+    # G마켓
+    if "gmarket.co.kr" in url_lower:
+        match = re.search(r'[?&]goodscode=(\d+)', marketplace_url)
+        if not match:
+            match = re.search(r'item-no=(\d+)', marketplace_url)
+        if match:
+            result["marketplace"] = "gmarket"
+            result["product_id"] = match.group(1)
+            result["normalized_url"] = marketplace_url
+        else:
+            result["error"] = "G마켓 URL에서 상품 ID를 추출할 수 없습니다"
+        return result
+    
+    # 일반 쇼핑몰 (오늘의집, 롯데ON, 자사몰 등)
+    # URL에서 도메인 및 상품 ID 추출 (도메인별 패턴 적용)
+    try:
+        parsed = urlparse(marketplace_url)
+        domain = parsed.netloc.lower()
+        
+        # www. 제거
+        if domain.startswith('www.'):
+            domain = domain[4:]
+        
+        result["marketplace"] = "general"
+        result["domain"] = domain
+        
+        # 도메인별 상품 ID 추출 패턴
+        product_id_extracted = None
+        
+        # 롯데온: /p/product/LO2532029028
+        if "lotteon.com" in domain:
+            match = re.search(r'/p/product/([A-Z0-9]+)', marketplace_url, re.IGNORECASE)
+            if match:
+                product_id_extracted = match.group(1)
+        
+        # 오늘의집: /goods/3679724
+        elif "ohou.se" in domain or "store.ohou.se" in domain:
+            match = re.search(r'/goods/(\d+)', marketplace_url)
+            if match:
+                product_id_extracted = match.group(1)
+        
+        # 이마트몰(SSG): itemId=1000716250779
+        elif "ssg.com" in domain or "emart.ssg.com" in domain:
+            match = re.search(r'itemId=(\d+)', marketplace_url)
+            if match:
+                product_id_extracted = match.group(1)
+        
+        if product_id_extracted:
+            result["product_id"] = product_id_extracted
+        else:
+            result["product_id"] = domain  # 상품 ID가 없으면 도메인 사용
+        
+        result["normalized_url"] = marketplace_url
+        return result
+    except Exception as e:
+        result["error"] = f"URL 파싱 실패: {str(e)}"
+        return result
+
+
+def match_marketplace_url_in_naver_link(
+    marketplace_url: str,
+    naver_link: str,
+    marketplace_info: Dict,
+    mall_name: str = None
+) -> bool:
+    """
+    네이버 API 응답의 link와 오픈마켓 URL 매칭 (일반 쇼핑몰 지원 추가)
+    
+    Args:
+        marketplace_url: 사용자가 제공한 오픈마켓 URL
+        naver_link: 네이버 API 응답의 link 필드
+        marketplace_info: extract_product_id_from_marketplace_url의 결과
+        mall_name: 네이버 API 응답의 mallName 필드 (선택)
+    
+    Returns:
+        매칭 여부 (bool)
+    """
+    marketplace = marketplace_info.get("marketplace")
+    product_id = marketplace_info.get("product_id")
+    domain = marketplace_info.get("domain")
+    
+    if not marketplace:
+        return False
+    
+    naver_link_lower = naver_link.lower()
+    
+    # 쿠팡: itemId 또는 products ID로 매칭
+    if marketplace == "coupang":
+        # 네이버 link에서 itemId 추출 (우선순위 1)
+        item_id_match = re.search(r'itemId=(\d+)', naver_link)
+        if item_id_match:
+            naver_item_id = item_id_match.group(1)
+            if naver_item_id == product_id:
+                return True
+        
+        # 네이버 link에서 products/(\d+) 추출 (우선순위 2)
+        product_id_match = re.search(r'coupang\.com/vp/products/(\d+)', naver_link)
+        if product_id_match:
+            naver_product_id = product_id_match.group(1)
+            if naver_product_id == product_id:
+                return True
+        
+        # 둘 다 매칭되지 않으면 False
+        return False
+    
+    # 옥션: itemno 파라미터로 매칭
+    if marketplace == "auction":
+        match = re.search(r'itemno=([A-Z0-9]+)', naver_link, re.IGNORECASE)
+        if match:
+            naver_itemno = match.group(1)
+            return naver_itemno.upper() == product_id.upper()
+        return False
+    
+    # 11번가: products/{id} 패턴으로 매칭
+    if marketplace == "11st":
+        match = re.search(r'11st\.co\.kr/products/(\d+)', naver_link, re.IGNORECASE)
+        if match:
+            naver_product_id = match.group(1)
+            return naver_product_id == product_id
+        return False
+    
+    # G마켓: goodscode 또는 item-no 파라미터로 매칭
+    if marketplace == "gmarket":
+        match = re.search(r'goodscode=(\d+)', naver_link)
+        if not match:
+            match = re.search(r'item-no=(\d+)', naver_link)
+        if match:
+            naver_goodscode = match.group(1)
+            return naver_goodscode == product_id
+        return False
+    
+    # 일반 쇼핑몰: 도메인 및 상품 ID 기반 매칭 (도메인별 패턴 적용)
+    if marketplace == "general" and domain:
+        # 네이버 link에서 도메인 추출
+        try:
+            parsed_naver = urlparse(naver_link)
+            naver_domain = parsed_naver.netloc.lower()
+            
+            # www. 제거
+            if naver_domain.startswith('www.'):
+                naver_domain = naver_domain[4:]
+            
+            # 도메인 매칭
+            domain_matched = (domain in naver_domain or naver_domain in domain) or (domain in naver_link_lower)
+            
+            if not domain_matched:
+                return False
+            
+            # 상품 ID가 도메인이 아닌 경우 (상품 ID가 추출된 경우) 상품 ID도 확인
+            if product_id and product_id != domain:
+                naver_product_id = None
+                
+                # 도메인별 상품 ID 추출 패턴
+                # 롯데온: /p/product/LO2532029028
+                if "lotteon.com" in domain:
+                    match = re.search(r'/p/product/([A-Z0-9]+)', naver_link, re.IGNORECASE)
+                    if match:
+                        naver_product_id = match.group(1)
+                
+                # 오늘의집: /goods/3679724
+                elif "ohou.se" in domain or "store.ohou.se" in domain:
+                    match = re.search(r'/goods/(\d+)', naver_link)
+                    if match:
+                        naver_product_id = match.group(1)
+                
+                # 이마트몰(SSG): itemId=1000716250779
+                elif "ssg.com" in domain or "emart.ssg.com" in domain:
+                    match = re.search(r'itemId=(\d+)', naver_link)
+                    if match:
+                        naver_product_id = match.group(1)
+                
+                # 상품 ID 매칭
+                if naver_product_id:
+                    if naver_product_id.upper() == product_id.upper():  # 대소문자 무시
+                        return True
+                    else:
+                        return False  # 도메인은 같지만 상품 ID가 다름
+                else:
+                    # 네이버 link에 상품 ID가 없으면 도메인만으로 매칭 (하지만 상품 ID가 있는 경우는 실패)
+                    return False
+            
+            # 상품 ID가 없거나 도메인과 같은 경우 도메인만으로 매칭
+            return True
+                
+        except Exception as e:
+            logger.debug(f"도메인 매칭 중 오류: {e}")
+            return False
+    
+    return False
+
+
+def get_shopping_rank_with_ad_flag_copy(
+    keyword: str,
+    marketplace_url: str,
+    display: int = 100,
+    max_pages: int = 10
+) -> Dict:
+    """
+    메인 키워드와 오픈마켓 URL을 받아서 네이버 순위 조회 (테스트용)
+    
+    처리 로직:
+    1. 네이버 쇼핑 검색 API를 키워드로 호출하여 검색 결과를 받아옵니다.
+    2. API 응답 결과에서 제공된 marketplace_url과 일치하는 링크를 찾습니다.
+    3. 링크가 일치하는 경우, 해당 API 응답에서 productId를 확인합니다.
+    4. 매칭된 상품의 상품명(product_name) 및 순위(rank)를 추출하여 반환합니다.
+    
+    주의: URL에서 상품 ID를 추출하는 것이 아니라, API 응답에서 링크 일치 여부를 확인한 후
+    해당 상품의 productId를 API 응답에서 확인합니다.
+    
+    Args:
+        keyword: 검색 키워드 (예: "게이밍의자")
+        marketplace_url: 오픈마켓 상품 URL
+            - 쿠팡: https://link.coupang.com/re/PCSNAVERPCSDP?itemId=24613356330&...
+            - 옥션: https://itempage3.auction.co.kr/DetailView.aspx?itemno=E832249308
+            - 11번가: https://www.11st.co.kr/products/7844692722
+            - G마켓: https://item.gmarket.co.kr/Item?goodscode=4254268378
+            - 오늘의집: https://store.ohou.se/goods/3679724?...
+            - 롯데온: https://www.lotteon.com/p/product/LO2532029028?...
+        display: 한 번에 표시할 검색 결과 개수 (기본값: 100, 최댓값: 100)
+        max_pages: 최대 검색할 페이지 수 (기본값: 10, 최대 1000개 결과)
+    
+    Returns:
+        {
+            "success": bool,              # 매칭 성공 여부
+            "marketplace": str,           # 마켓플레이스 타입 ("coupang", "auction", "11st", "gmarket", "general")
+            "product_id": str,            # 추출한 상품 ID (매칭용, API에서 확인한 productId와는 다를 수 있음)
+            "rank": int or None,          # 네이버 쇼핑 검색 결과에서의 순위
+            "product_name": str or None,  # API 응답에서 추출한 상품명
+            "mall_name": str or None,     # 쇼핑몰명
+            "price": str or None,         # 가격
+            "productId": str or None,     # API 응답에서 확인한 productId (네이버 상품 ID)
+            "marketplace_url": str,       # 테스트에 사용된 원본 오픈마켓 URL
+            "matched_link": str or None,  # 매칭된 네이버 API 응답의 link
+            "error": str or None          # 오류 메시지
+        }
+    """
+    result = {
+        "success": False,
+        "marketplace": None,
+        "product_id": None,
+        "domain": None,  # 일반 쇼핑몰의 경우 도메인
+        "rank": None,
+        "product_name": None,
+        "mall_name": None,
+        "price": None,
+        "productId": None,
+        "marketplace_url": marketplace_url,  # 테스트에 사용된 원본 오픈마켓 URL
+        "matched_link": None,  # 매칭된 네이버 API 응답의 link
+        "error": None
+    }
+    
+    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
+        result["error"] = "NAVER_CLIENT_ID와 NAVER_CLIENT_SECRET 환경 변수가 필요합니다."
+        return result
+    
+    try:
+        # 1. 오픈마켓 URL에서 정보 추출
+        marketplace_info = extract_product_id_from_marketplace_url(marketplace_url)
+        if marketplace_info.get("error"):
+            result["error"] = marketplace_info["error"]
+            return result
+        
+        result["marketplace"] = marketplace_info["marketplace"]
+        result["product_id"] = marketplace_info["product_id"]
+        if marketplace_info.get("domain"):
+            result["domain"] = marketplace_info["domain"]
+        
+        logger.info(
+            f"오픈마켓 URL 분석: {result['marketplace']}, "
+            f"상품ID: {result['product_id']}, "
+            f"도메인: {marketplace_info.get('domain', 'N/A')}, 키워드: {keyword}"
+        )
+        
+        # 2. 네이버 쇼핑 검색 API로 검색 (최대 1000개)
+        logger.info(f"키워드 '{keyword}'로 순위 조회 시작 (최대 {max_pages}페이지)")
+        
+        for page in range(1, max_pages + 1):
+            start = (page - 1) * display + 1  # 1, 101, 201, ...
+            
+            try:
+                # 네이버 오픈 API로 검색
+                api_results = get_shopping_rank_with_ad_flag(
+                    keyword,
+                    display=display,
+                    start=start,
+                    filter=None
+                )
+                
+                if not api_results:
+                    logger.debug(f"페이지 {page}: 결과 없음, 검색 중단")
+                    break
+                
+                logger.debug(f"페이지 {page} 검색 완료: {len(api_results)}개 결과 (start={start})")
+                
+                # 3. 검색 결과에서 오픈마켓 URL 매칭
+                for item in api_results:
+                    naver_link = item.get("link", "")
+                    mall_name = item.get("mall_name", "")
+                    
+                    # link와 오픈마켓 URL 매칭
+                    if match_marketplace_url_in_naver_link(
+                        marketplace_url,
+                        naver_link,
+                        marketplace_info,
+                        mall_name=mall_name
+                    ):
+                        # 매칭 성공
+                        result["success"] = True
+                        result["rank"] = item.get("rank")
+                        result["product_name"] = item.get("product_name", "")
+                        result["mall_name"] = item.get("mall_name", "")
+                        result["price"] = item.get("price", "")
+                        result["productId"] = item.get("productId", "")
+                        result["matched_link"] = naver_link  # 매칭된 링크 저장
+                        
+                        logger.info(
+                            f"매칭 성공: {result['marketplace']} 상품ID={result['product_id']}, "
+                            f"순위={result['rank']}, 쇼핑몰={result['mall_name']}, "
+                            f"상품명={result['product_name']}, productId={result['productId']}, "
+                            f"matched_link={naver_link}"
+                        )
+                        return result
+                
+                # 마지막 페이지면 중단
+                if len(api_results) < display:
+                    logger.debug(f"페이지 {page}: 마지막 페이지 (결과 {len(api_results)}개 < {display}개)")
+                    break
+                
+                # API 호출 간격
+                time.sleep(0.2)
+                
+            except Exception as e:
+                logger.error(f"페이지 {page} 검색 중 오류: {e}", exc_info=True)
+                break
+        
+        # 매칭 실패 (테스트 URL은 항상 포함하여 반환)
+        result["error"] = (
+            f"네이버 쇼핑 검색 결과에서 {result['marketplace']} 상품ID {result['product_id']}를 "
+            f"찾을 수 없습니다. (키워드: {keyword})"
+        )
+        logger.warning(
+            f"매칭 실패: {result['marketplace']} 상품ID={result['product_id']}, 키워드={keyword}, "
+            f"테스트 URL={result['marketplace_url']}"
+        )
+        # 매칭 실패 시에도 테스트 URL은 포함하여 반환
+        return result
+        
+    except Exception as e:
+        logger.error(f"순위 조회 중 오류: {e}", exc_info=True)
+        result["error"] = str(e)
+        return result
 
 
 # ============================================================================
@@ -559,70 +996,6 @@ def get_price_comparison_rank(keyword: str, product_id_or_nvmid: str) -> Optiona
         return None
 
 
-def get_product_name_from_url(url: str) -> Optional[str]:
-    """
-    URL에서 상품명을 추출하는 통합 함수
-    openmall.py와 basemall_url.py의 함수를 사용
-    
-    Args:
-        url: 크롤링할 URL
-    
-    Returns:
-        str: 상품명 또는 None
-    """
-    if not url or not url.strip():
-        return None
-    
-    url_lower = url.lower()
-    
-    # 순환 import 방지를 위해 함수 내부에서 import
-    try:
-        # 프로젝트 루트 경로 추가
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(os.path.dirname(current_dir))
-        if project_root not in sys.path:
-            sys.path.insert(0, project_root)
-        
-        # 오픈마켓 URL 체크 (쿠팡, 옥션, 11번가, G마켓)
-        openmall_domains = ['coupang.com', 'auction.co.kr', '11st.co.kr', 'gmarket.co.kr']
-        is_openmall = any(domain in url_lower for domain in openmall_domains)
-        
-        if is_openmall:
-            try:
-                from openmall import get_product_name as get_openmall_product_name
-                logger.info(f"오픈마켓 URL로 상품명 추출 시도: {url}")
-                product_name = get_openmall_product_name(url)
-                if product_name:
-                    # "Access Denied" 필터링
-                    if product_name.lower() not in ["access denied", "접근 거부", "forbidden"]:
-                        logger.info(f"✓ 오픈마켓 상품명 추출 성공: {product_name[:50]}...")
-                        return product_name
-                    else:
-                        logger.warning(f"봇 차단 감지: {product_name}")
-            except ImportError as e:
-                logger.warning(f"openmall.py import 실패: {e}")
-            except Exception as e:
-                logger.error(f"오픈마켓 상품명 추출 실패: {e}", exc_info=True)
-        
-        # 일반 쇼핑몰 URL 체크 (basemall_url)
-        try:
-            from basemall_url import get_product_name as get_basemall_product_name
-            logger.info(f"일반 쇼핑몰 URL로 상품명 추출 시도: {url}")
-            product_name = get_basemall_product_name(url)
-            if product_name:
-                logger.info(f"✓ 일반 쇼핑몰 상품명 추출 성공: {product_name[:50]}...")
-                return product_name
-        except ImportError as e:
-            logger.warning(f"basemall_url.py import 실패: {e}")
-        except Exception as e:
-            logger.error(f"일반 쇼핑몰 상품명 추출 실패: {e}", exc_info=True)
-    
-    except Exception as e:
-        logger.error(f"URL 크롤링 중 예상치 못한 오류: {e}", exc_info=True)
-    
-    return None
-
-
 def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Optional[str] = None, shopping_url: Optional[str] = None):
     """
     단일 광고의 순위와 상품명을 업데이트하는 함수
@@ -881,21 +1254,6 @@ def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Opt
                     product_name = None
                     logger.info(f"✓ Ad ID {ad_id}: 모든 URL 조회 실패로 rank와 product_name을 NULL로 설정")
             
-            # 네이버 API로 상품명을 가져오지 못한 경우, URL에서 직접 크롤링 시도
-            if not product_name or not product_name.strip():
-                url_to_crawl = None
-                if shopping_url and shopping_url.strip():
-                    url_to_crawl = shopping_url.strip()
-                elif store_url and store_url.strip():
-                    url_to_crawl = store_url.strip()
-                
-                if url_to_crawl:
-                    logger.info(f"Ad ID {ad_id}: 네이버 API에서 상품명을 가져오지 못해 URL에서 직접 크롤링 시도: {url_to_crawl}")
-                    crawled_product_name = get_product_name_from_url(url_to_crawl)
-                    if crawled_product_name:
-                        product_name = crawled_product_name
-                        logger.info(f"✓ Ad ID {ad_id}: URL 크롤링으로 상품명 추출 성공: {product_name[:50]}...")
-            
             # rank와 product_name 업데이트 (SQLAlchemy NULL 처리: None이면 NULL로 저장)
             ad.rank = rank
             # product_name이 빈 문자열이거나 None이면 명시적으로 None으로 설정 (SQLAlchemy에서 NULL로 저장)
@@ -981,29 +1339,11 @@ def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Opt
                 logger.info(f"product_mid 매칭 성공: productId={product_id}, link_nvmid={nvmid_from_link}, target={target_product_mid}, rank={rank}, product_name={product_name}")
                 break
         
-        # 네이버 API로 상품명을 가져오지 못한 경우, store_url이나 shopping_url이 있으면 크롤링 시도
-        if (not product_name or not product_name.strip()) and (ad.store_url or ad.shopping_url):
-            url_to_crawl = None
-            if ad.shopping_url and ad.shopping_url.strip():
-                url_to_crawl = ad.shopping_url.strip()
-            elif ad.store_url and ad.store_url.strip():
-                url_to_crawl = ad.store_url.strip()
-            
-            if url_to_crawl:
-                logger.info(f"Ad ID {ad_id}: 네이버 API에서 상품명을 가져오지 못해 URL에서 직접 크롤링 시도: {url_to_crawl}")
-                crawled_product_name = get_product_name_from_url(url_to_crawl)
-                if crawled_product_name:
-                    product_name = crawled_product_name
-                    logger.info(f"✓ Ad ID {ad_id}: URL 크롤링으로 상품명 추출 성공: {product_name[:50]}...")
-        
         # rank와 product_name 업데이트
         ad.rank = rank
         if product_name:
             ad.product_name = product_name.strip()
             logger.info(f"✓ Ad ID {ad_id}: 상품명 업데이트 완료: {product_name}")
-        else:
-            ad.product_name = None
-            logger.info(f"✓ Ad ID {ad_id}: 상품명을 NULL로 업데이트 완료")
         
         if should_close:
             db.commit()
@@ -1240,3 +1580,195 @@ def main(keyword: str, nvmid: str, product_id: int = None, main_keyword: str = N
 
 # 테스트 코드는 제거 (광고 수정 시 실행되는 함수이므로 print 문 제거)
 # if __name__ == "__main__": 블록은 제거됨
+
+if __name__ == "__main__":
+    # 환경 변수 확인
+    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
+        print("=" * 70)
+        print("환경 변수 오류")
+        print("=" * 70)
+        missing = []
+        if not NAVER_CLIENT_ID:
+            missing.append("NAVER_CLIENT_ID")
+        if not NAVER_CLIENT_SECRET:
+            missing.append("NAVER_CLIENT_SECRET")
+        print(f"다음 환경 변수가 설정되지 않았습니다: {', '.join(missing)}")
+        print("\n.env 파일에 다음을 추가하세요:")
+        print("NAVER_CLIENT_ID=your_client_id")
+        print("NAVER_CLIENT_SECRET=your_client_secret")
+        sys.exit(1)
+    
+    # 테스트 실행
+    print("=" * 70)
+    print("오픈마켓 URL로 네이버 순위 조회 테스트")
+    print("=" * 70)
+    
+    # 일반 쇼핑몰 테스트 (자사몰)
+    print("\n[테스트 5] 자사몰 (누카) 링크")
+    print("-" * 70)
+    result = get_shopping_rank_with_ad_flag_copy(
+        keyword="게이밍의자",
+        marketplace_url="https://nooka.co.kr/product/detail.html?product_no=60&cate_no=77&display_group=1",
+        max_pages=10  # 최대 1000개 결과 검색
+    )
+    
+    if result["success"]:
+        print(f"[SUCCESS] 매칭 성공!")
+        print(f"  테스트 링크: {result['marketplace_url']}")
+        print(f"  도메인: {result.get('domain', 'N/A')}")
+        print(f"  순위: {result['rank']}")
+        print(f"  상품명: {result['product_name']}")
+        print(f"  쇼핑몰: {result['mall_name']}")
+        print(f"  가격: {result['price']}원")
+        print(f"  productId: {result['productId']}")
+        # 상품명 일치 확인
+        expected_name = "누카 커스텀체어 G900-MS 6D 컴퓨터의자 사무용 사무실 학생 메쉬 게이밍 책상의자"
+        actual_name = result['product_name']
+        # HTML 태그 제거
+        import re
+        clean_actual = re.sub(r'<[^>]+>', '', actual_name)
+        if expected_name in clean_actual or clean_actual in expected_name:
+            print(f"  [상품명 일치 확인] 예상: {expected_name}")
+            print(f"  [상품명 일치 확인] 실제: {clean_actual}")
+            print(f"  [상품명 일치 확인] 일치 여부: 일치")
+        else:
+            print(f"  [상품명 일치 확인] 예상: {expected_name}")
+            print(f"  [상품명 일치 확인] 실제: {clean_actual}")
+            print(f"  [상품명 일치 확인] 일치 여부: 불일치")
+    else:
+        print(f"[FAILED] 매칭 실패: {result['error']}")
+    
+    # 일반 쇼핑몰 테스트 (오늘의집)
+    print("\n[테스트 6] 오늘의집 링크")
+    print("-" * 70)
+    result = get_shopping_rank_with_ad_flag_copy(
+        keyword="게이밍의자",
+        marketplace_url="https://store.ohou.se/goods/3679724?",
+        max_pages=10  # 최대 1000개 결과 검색
+    )
+    
+    if result["success"]:
+        print(f"[SUCCESS] 매칭 성공!")
+        print(f"  테스트 링크: {result['marketplace_url']}")
+        print(f"  도메인: {result.get('domain', 'N/A')}")
+        print(f"  순위: {result['rank']}")
+        print(f"  상품명: {result['product_name']}")
+        print(f"  쇼핑몰: {result['mall_name']}")
+        print(f"  가격: {result['price']}원")
+        print(f"  productId: {result['productId']}")
+    else:
+        print(f"[FAILED] 매칭 실패: {result['error']}")
+    
+    # 제공된 테스트 데이터로 추가 테스트
+    print("\n" + "=" * 70)
+    print("제공된 테스트 데이터로 추가 테스트")
+    print("=" * 70)
+    
+    # 롯데온 테스트
+    print("\n[테스트 7] 롯데온 링크")
+    print("-" * 70)
+    result = get_shopping_rank_with_ad_flag_copy(
+        keyword="게이밍의자",
+        marketplace_url="https://www.lotteon.com/p/product/LO2532029028?sitmNo=LO2532029028_2532029029&ch_no=100065&ch_dtl_no=1000030",
+        max_pages=10  # 최대 1000개 결과 검색
+    )
+    
+    if result["success"]:
+        print(f"[SUCCESS] 매칭 성공!")
+        print(f"  테스트 링크: {result['marketplace_url']}")
+        print(f"  도메인: {result.get('domain', 'N/A')}")
+        print(f"  순위: {result['rank']}")
+        print(f"  상품명: {result['product_name']}")
+        print(f"  쇼핑몰: {result['mall_name']}")
+        print(f"  가격: {result['price']}원")
+        print(f"  productId: {result['productId']}")
+    else:
+        print(f"[FAILED] 매칭 실패: {result['error']}")
+    
+    # 쿠팡 테스트 (제공된 데이터)
+    print("\n[테스트 8] 쿠팡 링크 (제공된 데이터)")
+    print("-" * 70)
+    result = get_shopping_rank_with_ad_flag_copy(
+        keyword="게이밍의자",
+        marketplace_url="https://www.coupang.com/vp/products/8989686766?",
+        max_pages=10  # 최대 1000개 결과 검색
+    )
+    
+    if result["success"]:
+        print(f"[SUCCESS] 매칭 성공!")
+        print(f"  테스트 링크: {result['marketplace_url']}")
+        print(f"  상품ID: {result['product_id']}")
+        print(f"  순위: {result['rank']}")
+        print(f"  상품명: {result['product_name']}")
+        print(f"  쇼핑몰: {result['mall_name']}")
+        print(f"  가격: {result['price']}원")
+        print(f"  productId: {result['productId']}")
+    else:
+        print(f"[FAILED] 매칭 실패: {result['error']}")
+    
+    # 오늘의집 테스트 (제공된 데이터)
+    print("\n[테스트 9] 오늘의집 링크 (제공된 데이터)")
+    print("-" * 70)
+    result = get_shopping_rank_with_ad_flag_copy(
+        keyword="게이밍의자",
+        marketplace_url="https://store.ohou.se/goods/3679724?",
+        max_pages=10  # 최대 1000개 결과 검색
+    )
+    
+    if result["success"]:
+        print(f"[SUCCESS] 매칭 성공!")
+        print(f"  테스트 링크: {result['marketplace_url']}")
+        print(f"  도메인: {result.get('domain', 'N/A')}")
+        print(f"  순위: {result['rank']}")
+        print(f"  상품명: {result['product_name']}")
+        print(f"  쇼핑몰: {result['mall_name']}")
+        print(f"  가격: {result['price']}원")
+        print(f"  productId: {result['productId']}")
+    else:
+        print(f"[FAILED] 매칭 실패: {result['error']}")
+    
+    # 이마트몰(SSG) 테스트
+    print("\n[테스트 10] 이마트몰(SSG) 링크")
+    print("-" * 70)
+    result = get_shopping_rank_with_ad_flag_copy(
+        keyword="게이밍의자",
+        marketplace_url="https://emart.ssg.com/item/itemView.ssg?itemId=1000716250779&siteNo=6001",
+        max_pages=10  # 최대 1000개 결과 검색
+    )
+    
+    if result["success"]:
+        print(f"[SUCCESS] 매칭 성공!")
+        print(f"  테스트 링크: {result['marketplace_url']}")
+        print(f"  도메인: {result.get('domain', 'N/A')}")
+        print(f"  순위: {result['rank']}")
+        print(f"  상품명: {result['product_name']}")
+        print(f"  쇼핑몰: {result['mall_name']}")
+        print(f"  가격: {result['price']}원")
+        print(f"  productId: {result['productId']}")
+    else:
+        print(f"[FAILED] 매칭 실패: {result['error']}")
+    
+    # G마켓 테스트
+    print("\n[테스트 11] G마켓 링크")
+    print("-" * 70)
+    result = get_shopping_rank_with_ad_flag_copy(
+        keyword="게이밍의자",
+        marketplace_url="https://item.gmarket.co.kr/Item?goodscode=4254268378",
+        max_pages=10  # 최대 1000개 결과 검색
+    )
+    
+    if result["success"]:
+        print(f"[SUCCESS] 매칭 성공!")
+        print(f"  테스트 링크: {result['marketplace_url']}")
+        print(f"  상품ID: {result['product_id']}")
+        print(f"  순위: {result['rank']}")
+        print(f"  상품명: {result['product_name']}")
+        print(f"  쇼핑몰: {result['mall_name']}")
+        print(f"  가격: {result['price']}원")
+        print(f"  productId: {result['productId']}")
+    else:
+        print(f"[FAILED] 매칭 실패: {result['error']}")
+    
+    print("\n" + "=" * 70)
+    print("테스트 완료")
+    print("=" * 70)
