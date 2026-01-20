@@ -109,7 +109,7 @@ def get_product_name_by_selenium(url: str, xpath: str = None, timeout: int = 15)
         driver.get(url)
         
         # 페이지 로딩 대기
-        time.sleep(5)
+        time.sleep(3)
         
         # 쿠팡의 경우 여러 패턴을 순차적으로 시도
         domain = get_domain_from_url(url)
@@ -158,6 +158,43 @@ def get_product_name_by_selenium(url: str, xpath: str = None, timeout: int = 15)
                     text = h1.text.strip()
                     if text and len(text) > 5:  # 의미있는 텍스트인지 확인
                         logger.info(f"✓ h1 태그에서 상품명 추출: {text}")
+                        return text
+            except:
+                pass
+            return None
+        
+        # 11번가의 경우 여러 패턴을 순차적으로 시도
+        elif '11st.co.kr' in domain:
+            # 11번가 대체 XPath 패턴들 (우선순위 순)
+            elevenst_xpaths = [
+                # 1번째 패턴 (현재 코드)
+                '/html/body/div[2]/div[2]/div/div[1]/div[2]/div/div[1]/div[2]/div[2]/div[2]/h1',
+                # 2번째 패턴 (사용자 제공 1)
+                '/html/body/div[2]/div[3]/div/div[1]/div[2]/div/div[1]/div[2]/div[2]/div[2]/h1',
+                # 3번째 패턴 (사용자 제공 2)
+                '/html/body/div[2]/div[3]/div/div[1]/div[2]/div/div[1]/div[2]/div[2]/div[3]/h1',
+            ]
+            
+            for xpath_pattern in elevenst_xpaths:
+                try:
+                    wait = WebDriverWait(driver, 5)
+                    element = wait.until(EC.presence_of_element_located((By.XPATH, xpath_pattern)))
+                    product_name = element.text.strip()
+                    if product_name:
+                        logger.info(f"✓ 11번가 상품명 추출 성공 (XPath: {xpath_pattern}): {product_name}")
+                        return product_name
+                except (TimeoutException, NoSuchElementException):
+                    logger.debug(f"11번가 XPath 실패: {xpath_pattern}")
+                    continue
+            
+            logger.error(f"✗ 모든 11번가 XPath 패턴 실패")
+            # 마지막 시도: 페이지에서 h1 태그 찾기
+            try:
+                h1_elements = driver.find_elements(By.TAG_NAME, 'h1')
+                for h1 in h1_elements:
+                    text = h1.text.strip()
+                    if text and len(text) > 5:  # 의미있는 텍스트인지 확인
+                        logger.info(f"✓ 11번가 h1 태그에서 상품명 추출: {text}")
                         return text
             except:
                 pass
