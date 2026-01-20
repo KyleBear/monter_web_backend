@@ -70,6 +70,7 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=8001,
-        reload=True  # 개발 모드: 코드 변경 시 자동 재시작
+        # reload=True  # 개발 모드: 코드 변경 시 자동 재시작
+        reload=False  # 개발 모드: 코드 변경 시 자동 재시작
     )
 
