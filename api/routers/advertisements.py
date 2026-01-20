@@ -1581,66 +1581,66 @@ async def delete_advertisements(
             # 광고주 정보 조회
             user = db.query(UsersAdmin).filter(UsersAdmin.user_id == ad.user_id).first()
             if user:
-            # 작업 수행자 ID (실제로 삭제한 유저)
-            current_username = current_user.get("username")
-            performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
-            performed_by_user_id = performed_by_user.user_id if performed_by_user else None
-            performed_by_role = performed_by_user.role if performed_by_user else None
-            
-            # 작업 수행자의 role에 따라 advertiser_user_id와 agency_user_id 결정
-            if performed_by_role == "agency":
-                # 대행사가 삭제한 경우
-                agency_user_id = performed_by_user_id  # 작업 수행자
-                advertiser_user_id = ad.user_id  # 광고 소유자
-            elif performed_by_role == "total":
-                # 총판사가 삭제한 경우
-                if user.role == "advertiser":
-                    agency_user_id = user.parent_user_id  # 광고주의 대행사
+                # 작업 수행자 ID (실제로 삭제한 유저)
+                current_username = current_user.get("username")
+                performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+                performed_by_user_id = performed_by_user.user_id if performed_by_user else None
+                performed_by_role = performed_by_user.role if performed_by_user else None
+                
+                # 작업 수행자의 role에 따라 advertiser_user_id와 agency_user_id 결정
+                if performed_by_role == "agency":
+                    # 대행사가 삭제한 경우
+                    agency_user_id = performed_by_user_id  # 작업 수행자
                     advertiser_user_id = ad.user_id  # 광고 소유자
+                elif performed_by_role == "total":
+                    # 총판사가 삭제한 경우
+                    if user.role == "advertiser":
+                        agency_user_id = user.parent_user_id  # 광고주의 대행사
+                        advertiser_user_id = ad.user_id  # 광고 소유자
+                    else:
+                        agency_user_id = None
+                        advertiser_user_id = ad.user_id
                 else:
-                    agency_user_id = None
+                    # 관리자나 기타
+                    agency_user_id = user.parent_user_id if user.role == "advertiser" else None
                     advertiser_user_id = ad.user_id
-            else:
-                # 관리자나 기타
-                agency_user_id = user.parent_user_id if user.role == "advertiser" else None
-                advertiser_user_id = ad.user_id
-            
-            # 삭제 로그 생성 (settlement_type='refund')
-            new_settlement = SettlementAdmin(
-                settlement_type="refund",
-                agency_user_id=agency_user_id,
-                advertiser_user_id=advertiser_user_id,
-                ad_id=ad.ad_id,
-                performed_by_user_id=performed_by_user_id,
-                quantity=None,
-                period_start=None,
-                period_end=None,
-                total_days=None,
-                start_date=None,
-                ad_product_nm=ad.product_name  # 일단 현재 값으로 설정
-            )
-            
-            db.add(new_settlement)
-            db.flush()  # ID를 얻기 위해 flush
-            
-            # ad.product_name이 None이면 기존 정산 로그에서 찾기
-            # 선택적 작업이므로 내부에서 예외 처리
-            if not ad.product_name:
-                try:
-                    existing_settlement = db.query(SettlementAdmin).filter(
-                        SettlementAdmin.ad_id == ad.ad_id,
-                        SettlementAdmin.ad_product_nm.isnot(None)
-                    ).order_by(SettlementAdmin.settlement_id.desc()).first()
-                    
-                    if existing_settlement and existing_settlement.ad_product_nm:
-                        new_settlement.ad_product_nm = existing_settlement.ad_product_nm
-                        ad.product_name = existing_settlement.ad_product_nm
-                        db.refresh(ad)
-                except Exception as e:
-                    # 기존 정산 로그 조회 실패해도 삭제는 계속 진행
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.warning(f"광고 ID {ad.ad_id} 기존 정산 로그 조회 실패: {str(e)}")
+                
+                # 삭제 로그 생성 (settlement_type='refund')
+                new_settlement = SettlementAdmin(
+                    settlement_type="refund",
+                    agency_user_id=agency_user_id,
+                    advertiser_user_id=advertiser_user_id,
+                    ad_id=ad.ad_id,
+                    performed_by_user_id=performed_by_user_id,
+                    quantity=None,
+                    period_start=None,
+                    period_end=None,
+                    total_days=None,
+                    start_date=None,
+                    ad_product_nm=ad.product_name  # 일단 현재 값으로 설정
+                )
+                
+                db.add(new_settlement)
+                db.flush()  # ID를 얻기 위해 flush
+                
+                # ad.product_name이 None이면 기존 정산 로그에서 찾기
+                # 선택적 작업이므로 내부에서 예외 처리
+                if not ad.product_name:
+                    try:
+                        existing_settlement = db.query(SettlementAdmin).filter(
+                            SettlementAdmin.ad_id == ad.ad_id,
+                            SettlementAdmin.ad_product_nm.isnot(None)
+                        ).order_by(SettlementAdmin.settlement_id.desc()).first()
+                        
+                        if existing_settlement and existing_settlement.ad_product_nm:
+                            new_settlement.ad_product_nm = existing_settlement.ad_product_nm
+                            ad.product_name = existing_settlement.ad_product_nm
+                            db.refresh(ad)
+                    except Exception as e:
+                        # 기존 정산 로그 조회 실패해도 삭제는 계속 진행
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.warning(f"광고 ID {ad.ad_id} 기존 정산 로그 조회 실패: {str(e)}")
 
             # 광고 삭제 (하드 삭제)
             db.delete(ad)
