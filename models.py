@@ -68,11 +68,7 @@ class Product(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     start_date = Column(DateTime, comment='작업 시작 날짜/시간')
     end_date = Column(DateTime, comment='작업 종료 날짜/시간')
-    # 관계 (제거됨)
-    # proxy = relationship("ProxyIP", back_populates="products")
-    # schedules = relationship("ProductSchedule", back_populates="product")
-    # change_logs = relationship("ProductChangeLog", back_populates="product")
-    # proxy_logs = relationship("ProxyLog", back_populates="product")
+
 
 
 # 상품 스케줄 테이블
@@ -87,8 +83,6 @@ class ProductSchedule(Base):
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     
-    # 관계 (제거됨)
-    # product = relationship("Product", back_populates="schedules")
 
 
 # 상품 변경 로그 테이블
@@ -102,8 +96,6 @@ class ProductChangeLog(Base):
     changed_by = Column(String(255), comment='변경 수행자')
     changed_at = Column(DateTime, default=func.now())
     
-    # 관계 (제거됨)
-    # product = relationship("Product", back_populates="change_logs")
 
 
 # 프록시 로그 테이블
@@ -118,10 +110,6 @@ class ProxyLog(Base):
     status = Column(String(50), comment='success / fail')
     response_code = Column(Integer)
     response_time_ms = Column(Float)
-    
-    # 관계 (제거됨)
-    # product = relationship("Product", back_populates="proxy_logs")
-    # proxy = relationship("ProxyIP", back_populates="proxy_logs")
 
 
 # 프록시 IP 체크 로그 테이블
@@ -134,11 +122,6 @@ class IPCheckLog(Base):
     check_time = Column(DateTime, comment='체크 수행 시간')
     check_result = Column(String(50), comment='PASS/FAIL')
     error_message = Column(Text)
-    
-    # 관계 (제거됨)
-    # datasection = relationship("DataSection", back_populates="ip_check_logs")
-    # proxy = relationship("ProxyIP", back_populates="ip_check_logs")
-
 
 # 쿠키 수집 테이블
 class CookieCollection(Base):
@@ -151,8 +134,6 @@ class CookieCollection(Base):
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     
-    # 관계 (제거됨)
-    # proxy = relationship("ProxyIP", back_populates="cookie_collections")
 
 
 # 쿠키 수집 작업 로그 테이블
@@ -167,10 +148,6 @@ class CookieCollectionLog(Base):
     status = Column(String(50), comment='SUCCESS/FAIL/IN_PROGRESS')
     collected_count = Column(Integer, comment='수집된 쿠키 수')
     error_message = Column(Text)
-    
-    # 관계 (제거됨)
-    # datasection = relationship("DataSection", back_populates="cookie_collection_logs")
-
 
 # 사용자/계정 테이블 (로그인 + 계정관리)
 class UsersAdmin(Base):
@@ -188,11 +165,6 @@ class UsersAdmin(Base):
     is_active = Column(Boolean, default=True, comment='계정 활성화 여부')
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
-    
-    # 관계 (제거됨)
-    # parent_user = relationship("UsersAdmin", remote_side=[user_id], backref="child_users")
-    # advertisements = relationship("AdvertisementsAdmin", back_populates="user")
-
 
 # 광고 테이블 (광고관리)
 class AdvertisementsAdmin(Base):
@@ -217,10 +189,6 @@ class AdvertisementsAdmin(Base):
     shopping_url = Column(String(500), comment='쇼핑 검색 URL')
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
-    
-    # 관계 (제거됨)
-    # user = relationship("UsersAdmin", back_populates="advertisements")
-    # settlements = relationship("SettlementAdmin", back_populates="advertisement")
 
 
 # 정산 로그 테이블 (정산로그)
@@ -241,8 +209,33 @@ class SettlementAdmin(Base):
     start_date = Column(Date, comment='시작일')
     ad_product_nm = Column(String(255), comment='광고 상품명 (광고 삭제 시에도 유지)')
     # 광고 id로 광고 소유자의 user_id 확인후 광고주 id, 및 대행사 id 의 대행사 이름 가져오기.
+
+
+# 공지사항 테이블
+class Notice(Base):
+    __tablename__ = 'notices'
     
-    # 관계 (제거됨)
-    # agency_user = relationship("UsersAdmin", foreign_keys=[agency_user_id], backref="agency_settlements")
-    # advertiser_user = relationship("UsersAdmin", foreign_keys=[advertiser_user_id], backref="advertiser_settlements")
-    # advertisement = relationship("AdvertisementsAdmin", back_populates="settlements")
+    notice_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    title = Column(String(255), nullable=False, comment='공지사항 제목')
+    content = Column(Text, nullable=False, comment='공지사항 내용')
+    is_pinned = Column(Boolean, default=False, comment='고정 여부 (TINYINT(1))')
+    created_by = Column(BigInteger, nullable=False, comment='작성자 user_id')
+    updated_by = Column(BigInteger, comment='수정자 user_id')
+    created_at = Column(DateTime, server_default=func.current_timestamp(), comment='생성일시')
+    updated_at = Column(DateTime, server_default=func.current_timestamp(), onupdate=func.current_timestamp(), comment='수정일시')
+
+
+# 자주묻는 질문(FAQ) 테이블
+class FAQ(Base):
+    __tablename__ = 'faqs'
+    
+    faq_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    question = Column(String(255), nullable=False, comment='질문')
+    answer = Column(Text, nullable=False, comment='답변')
+    category = Column(String(100), comment='카테고리')
+    sort_order = Column(Integer, default=0, comment='정렬 순서')
+    created_by = Column(BigInteger, nullable=False, comment='작성자 user_id')
+    updated_by = Column(BigInteger, comment='수정자 user_id')
+    created_at = Column(DateTime, server_default=func.current_timestamp(), comment='생성일시')
+    updated_at = Column(DateTime, server_default=func.current_timestamp(), onupdate=func.current_timestamp(), comment='수정일시')
+    

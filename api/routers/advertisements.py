@@ -1451,61 +1451,88 @@ async def update_advertisement(
     
     # 광고주 정보 조회 (대행사 ID 찾기 위해)
     user = db.query(UsersAdmin).filter(UsersAdmin.user_id == ad.user_id).first()
-    if user:
-        agency_user_id = user.parent_user_id if user.role == "advertiser" else None
-        
-        # 작업 수행자 ID (실제로 수정한 유저)
-        current_username = current_user.get("username")
-        performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
-        performed_by_user_id = performed_by_user.user_id if performed_by_user else None
-        
-        # 수정 로그 생성 (settlement_type='update')
-        new_settlement = SettlementAdmin(
-            settlement_type="update",
-            agency_user_id=agency_user_id,
-            advertiser_user_id=ad.user_id,
-            ad_id=ad.ad_id,
-            performed_by_user_id=performed_by_user_id,
-            quantity=None,
-            period_start=None,
-            period_end=None,
-            total_days=None,
-            start_date=None,
-            ad_product_nm=ad.product_name
-        )
-        
-        db.add(new_settlement)
     
-    # 순위 업데이트 (store_url, shopping_url이 있거나 main_keyword와 product_mid가 있는 경우)
     try:
-        store_url = advertisement.store_url
-        shopping_url = advertisement.shopping_url
-        
-        if store_url or shopping_url or (ad.main_keyword and ad.product_mid):
-            # 순환 import 방지를 위해 함수 내부에서 import
-            from api.routers.crol import update_single_advertisement_rank
-            update_single_advertisement_rank(
-                ad_id=ad.ad_id, 
-                db_session=db, 
-                store_url=store_url,
-                shopping_url=shopping_url
+        if user:
+            agency_user_id = user.parent_user_id if user.role == "advertiser" else None
+            
+            # 작업 수행자 ID (실제로 수정한 유저)
+            current_username = current_user.get("username")
+            performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+            performed_by_user_id = performed_by_user.user_id if performed_by_user else None
+            
+            # 수정 로그 생성 (settlement_type='update')
+            new_settlement = SettlementAdmin(
+                settlement_type="update",
+                agency_user_id=agency_user_id,
+                advertiser_user_id=ad.user_id,
+                ad_id=ad.ad_id,
+                performed_by_user_id=performed_by_user_id,
+                quantity=None,
+                period_start=None,
+                period_end=None,
+                total_days=None,
+                start_date=None,
+                ad_product_nm=ad.product_name  # 일단 현재 값으로 설정
             )
+            
+            db.add(new_settlement)
+            db.flush()  # ID를 얻기 위해 flush
+
+            # 순위 업데이트 (store_url, shopping_url이 있거나 main_keyword와 product_mid가 있는 경우)
+            # 실패 시 예외가 발생하여 except로 이동, rollback됨
+            store_url = advertisement.store_url
+            shopping_url = advertisement.shopping_url
+            
+            if store_url or shopping_url or (ad.main_keyword and ad.product_mid):
+                # 순환 import 방지를 위해 함수 내부에서 import
+                from api.routers.crol import update_single_advertisement_rank
+                update_single_advertisement_rank(
+                    ad_id=ad.ad_id, 
+                    db_session=db, 
+                    store_url=store_url,
+                    shopping_url=shopping_url
+                )
+                db.refresh(ad)  # prod_name
+                new_settlement.ad_product_nm = ad.product_name  # prod_name 수정 업데이트
+        
+        # commit도 try-except로 감싸기 (DB 오류 대비)
+        try:
+            db.commit()
+            db.refresh(ad)
+        except Exception as e:
+            db.rollback()
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"광고 수정 commit 실패: {str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"광고 수정 중 데이터베이스 오류가 발생했습니다: {str(e)}"
+            )
+        
+        # 여기까지 도달하면 성공, return 실행
+        return {
+            "success": True,
+            "message": "광고가 수정되었습니다.",
+            "data": {
+                "ad_id": ad.ad_id
+            }
+        }
+    
+    except HTTPException:
+        # HTTPException은 그대로 전파 (rollback은 이미 내부에서 처리됨)
+        db.rollback()
+        raise
     except Exception as e:
-        # 순위 업데이트 실패해도 광고 수정은 계속 진행
+        # 예상치 못한 오류 발생 시 rollback
+        db.rollback()
         import logging
         logger = logging.getLogger(__name__)
-        logger.warning(f"광고 ID {ad.ad_id} 순위 업데이트 실패: {str(e)}")
-    
-    db.commit()
-    db.refresh(ad)
-    
-    return {
-        "success": True,
-        "message": "광고가 수정되었습니다.",
-        "data": {
-            "ad_id": ad.ad_id
-        }
-    }
+        logger.error(f"광고 수정 중 오류 발생: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"광고 수정 중 오류가 발생했습니다: {str(e)}"
+        )
 
 
 @router.delete("")
@@ -1538,21 +1565,22 @@ async def delete_advertisements(
     not_found_ids = []
     unauthorized_ids = []
     
-    for ad_id in delete_request.ad_ids:
-        ad = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == ad_id).first()
-        
-        if not ad:
-            not_found_ids.append(ad_id)
-            continue
-        
-        # 권한 체크 (총판사/대행사는 하위 계정의 광고도 삭제 가능)
-        if not _check_advertisement_ownership(ad, current_user, db):
-            unauthorized_ids.append(ad_id)
-            continue
-        
-        # 광고주 정보 조회
-        user = db.query(UsersAdmin).filter(UsersAdmin.user_id == ad.user_id).first()
-        if user:
+    try:
+        for ad_id in delete_request.ad_ids:
+            ad = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == ad_id).first()
+            
+            if not ad:
+                not_found_ids.append(ad_id)
+                continue
+            
+            # 권한 체크 (총판사/대행사는 하위 계정의 광고도 삭제 가능)
+            if not _check_advertisement_ownership(ad, current_user, db):
+                unauthorized_ids.append(ad_id)
+                continue
+            
+            # 광고주 정보 조회
+            user = db.query(UsersAdmin).filter(UsersAdmin.user_id == ad.user_id).first()
+            if user:
             # 작업 수행자 ID (실제로 삭제한 유저)
             current_username = current_user.get("username")
             performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
@@ -1589,16 +1617,62 @@ async def delete_advertisements(
                 period_end=None,
                 total_days=None,
                 start_date=None,
-                ad_product_nm=ad.product_name
+                ad_product_nm=ad.product_name  # 일단 현재 값으로 설정
             )
             
             db.add(new_settlement)
+            db.flush()  # ID를 얻기 위해 flush
+            
+            # ad.product_name이 None이면 기존 정산 로그에서 찾기
+            # 선택적 작업이므로 내부에서 예외 처리
+            if not ad.product_name:
+                try:
+                    existing_settlement = db.query(SettlementAdmin).filter(
+                        SettlementAdmin.ad_id == ad.ad_id,
+                        SettlementAdmin.ad_product_nm.isnot(None)
+                    ).order_by(SettlementAdmin.settlement_id.desc()).first()
+                    
+                    if existing_settlement and existing_settlement.ad_product_nm:
+                        new_settlement.ad_product_nm = existing_settlement.ad_product_nm
+                        ad.product_name = existing_settlement.ad_product_nm
+                        db.refresh(ad)
+                except Exception as e:
+                    # 기존 정산 로그 조회 실패해도 삭제는 계속 진행
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"광고 ID {ad.ad_id} 기존 정산 로그 조회 실패: {str(e)}")
+
+            # 광고 삭제 (하드 삭제)
+            db.delete(ad)
+            deleted_count += 1
         
-        # 광고 삭제 (하드 삭제)
-        db.delete(ad)
-        deleted_count += 1
+        # commit도 try-except로 감싸기
+        try:
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"광고 삭제 commit 실패: {str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"광고 삭제 중 데이터베이스 오류가 발생했습니다: {str(e)}"
+            )
     
-    db.commit()
+    except HTTPException:
+        # HTTPException은 그대로 전파 (rollback은 이미 내부에서 처리됨)
+        db.rollback()
+        raise
+    except Exception as e:
+        # 예상치 못한 오류 발생 시 rollback
+        db.rollback()
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"광고 삭제 중 오류 발생: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"광고 삭제 중 오류가 발생했습니다: {str(e)}"
+        )
     
     message_parts = []
     if deleted_count > 0:

@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 import uvicorn
 
 # API 라우터 임포트
-from api.routers import auth, accounts, advertisements, settlements
+from api.routers import auth, accounts, advertisements, settlements, notices
 
 # FastAPI 앱 생성
 app = FastAPI(
@@ -40,6 +40,7 @@ app.include_router(auth.router, prefix="/auth", tags=["인증"])
 app.include_router(accounts.router, prefix="/accounts", tags=["계정 관리"])
 app.include_router(advertisements.router, prefix="/advertisements", tags=["광고 관리"])
 app.include_router(settlements.router, prefix="/settlements", tags=["정산 로그"])
+app.include_router(notices.router, prefix="/notices", tags=["공지사항 및 FAQ"])
 
 # 로컬개발용 API 라우터 등록
 # app.include_router(auth.router, prefix="/api/auth", tags=["인증"])
