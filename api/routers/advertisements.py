@@ -23,7 +23,7 @@ router = APIRouter()
 
 # 요청/응답 모델
 class AdvertisementCreate(BaseModel):
-    user_id: int
+    user_id: Optional[int] = None  # Optional로 변경 (없으면 현재 사용자 사용)
     main_keyword: Optional[str] = None  # URL에서 추출 가능하므로 Optional
     price_comparison: bool = False
     plus: bool = False
@@ -31,10 +31,10 @@ class AdvertisementCreate(BaseModel):
     # product_mid와 price_comparison_mid는 URL에서만 추출 (직접 입력 불가)
     store_url: Optional[str] = None
     shopping_url: Optional[str] = None
-    work_days: int
-    start_date: date
-    end_date: date
-    slot: Optional[int] = None
+    work_days: Optional[int] = None  # Optional로 변경 (start_date와 end_date로 계산)
+    start_date: date  # 필수
+    end_date: date  # 필수
+    slot: int  # 필수
 
 
 class AdvertisementUpdate(BaseModel):
@@ -657,37 +657,14 @@ async def create_advertisement(
             detail="권한 정보가 일치하지 않습니다. 다시 로그인해주세요."
         )
     
-    # 대행사는 소속 사용자 지정 필수
-    if actual_role == "agency":
-        # 대행사는 자신의 user_id가 아닌 다른 사용자를 지정해야 함
-        if advertisement.user_id == actual_user_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="대행사는 소속 사용자를 지정하여 광고를 등록해야 합니다."
-            )
-        
-        # 소속 사용자인지 확인
-        if not _check_user_access_permission(advertisement.user_id, current_user, db):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="계정 계층 구조 내의 사용자만 지정할 수 있습니다."
-            )
-    elif actual_role == "total":  # 총판사
-        # 총판사는 계정 계층 구조 내의 사용자 지정 가능
-        if advertisement.user_id != actual_user_id:
-            if not _check_user_access_permission(advertisement.user_id, current_user, db):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="계정 계층 구조 내의 사용자만 지정할 수 있습니다."
-                )
-    # 슈퍼유저는 모든 사용자 지정 가능 (추가 체크 불필요)
+    # user_id가 없으면 현재 사용자의 user_id 사용
+    target_user_id = advertisement.user_id if advertisement.user_id else actual_user_id
     
-    # 사용자 존재 확인
-    user = db.query(UsersAdmin).filter(UsersAdmin.user_id == advertisement.user_id).first()
-    if not user:
+    # 슬롯수 필수 체크
+    if advertisement.slot is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="사용자를 찾을 수 없습니다."
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="슬롯수는 필수입니다."
         )
     
     # 날짜 유효성 검증
@@ -697,15 +674,41 @@ async def create_advertisement(
             detail="시작일은 종료일보다 이전이어야 합니다."
         )
     
-    # main_keyword 필수 체크 (입력받은 값 사용)
-    if not advertisement.main_keyword:
+    # 대행사는 소속 사용자 지정 필수
+    if actual_role == "agency":
+        # 대행사는 자신의 user_id가 아닌 다른 사용자를 지정해야 함
+        if target_user_id == actual_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="대행사는 소속 사용자를 지정하여 광고를 등록해야 합니다."
+            )
+        
+        # 소속 사용자인지 확인
+        if not _check_user_access_permission(target_user_id, current_user, db):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="계정 계층 구조 내의 사용자만 지정할 수 있습니다."
+            )
+    elif actual_role == "total":  # 총판사
+        # 총판사는 계정 계층 구조 내의 사용자 지정 가능
+        if target_user_id != actual_user_id:
+            if not _check_user_access_permission(target_user_id, current_user, db):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="계정 계층 구조 내의 사용자만 지정할 수 있습니다."
+                )
+    # 슈퍼유저는 모든 사용자 지정 가능 (추가 체크 불필요)
+    
+    # 사용자 존재 확인
+    user = db.query(UsersAdmin).filter(UsersAdmin.user_id == target_user_id).first()
+    if not user:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="main_keyword는 필수입니다."
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="사용자를 찾을 수 없습니다."
         )
     
-    # 입력받은 main_keyword 사용
-    main_keyword = advertisement.main_keyword
+    # main_keyword는 Optional이므로 없으면 빈 문자열 처리
+    main_keyword = advertisement.main_keyword if advertisement.main_keyword else ""
     extracted_product_name = None
     extracted_product_mid = None  # URL에서만 추출
     extracted_price_comparison_mid = None  # URL에서만 추출
@@ -894,7 +897,7 @@ async def create_advertisement(
         user_affiliation = user.affiliation if user.affiliation else None
         
         new_advertisement = AdvertisementsAdmin(
-            user_id=advertisement.user_id,
+            user_id=target_user_id,
             status="pending",
             main_keyword=main_keyword,
             price_comparison=advertisement.price_comparison,
@@ -925,7 +928,7 @@ async def create_advertisement(
         new_settlement = SettlementAdmin(
             settlement_type="order",
             agency_user_id=agency_user_id,
-            advertiser_user_id=advertisement.user_id,
+            advertiser_user_id=target_user_id,
             ad_id=new_advertisement.ad_id,
             performed_by_user_id=performed_by_user_id,
             quantity=1,
