@@ -34,7 +34,7 @@ class AdvertisementCreate(BaseModel):
     work_days: int
     start_date: date
     end_date: date
-    slot: Optional[str] = None
+    slot: Optional[int] = None
 
 
 class AdvertisementUpdate(BaseModel):
@@ -45,7 +45,7 @@ class AdvertisementUpdate(BaseModel):
     store_url: Optional[str] = None
     shopping_url: Optional[str] = None
     memo: Optional[str] = None
-    slot: Optional[str] = None
+    slot: Optional[int] = None
 
 
 class AdvertisementDelete(BaseModel):
@@ -378,7 +378,7 @@ async def get_advertisements(
             "start_date": ad.start_date.isoformat() if ad.start_date else None,
             "end_date": ad.end_date.isoformat() if ad.end_date else None,
             "affiliation": ad.affiliation or "",
-            "slot": ad.slot or "",
+            "slot": ad.slot,
             "created_at": ad.created_at.isoformat() if ad.created_at else None
         })
     
@@ -524,7 +524,7 @@ async def export_advertisements(
             ad.end_date.strftime("%Y-%m-%d") if ad.end_date else "",
             user.username or "",
             ad.affiliation or "",
-            ad.slot or "",
+            str(ad.slot) if ad.slot is not None else "",
             ad.created_at.strftime("%Y-%m-%d %H:%M:%S") if ad.created_at else ""
         ])
     
@@ -603,7 +603,7 @@ async def get_advertisement(
             "start_date": ad.start_date.isoformat() if ad.start_date else None,
             "end_date": ad.end_date.isoformat() if ad.end_date else None,
             "affiliation": ad.affiliation or "",
-            "slot": ad.slot or "",
+            "slot": ad.slot,
             "created_at": ad.created_at.isoformat() if ad.created_at else None,
             "updated_at": ad.updated_at.isoformat() if ad.updated_at else None
         }
@@ -1166,7 +1166,7 @@ async def upload_advertisements_csv(
                 product_name = str(row['product_name']).strip() if 'product_name' in row and pd.notna(row['product_name']) else None
                 product_mid = str(row['product_mid']).strip() if 'product_mid' in row and pd.notna(row['product_mid']) else None
                 price_comparison_mid = str(row['price_comparison_mid']).strip() if 'price_comparison_mid' in row and pd.notna(row['price_comparison_mid']) else None
-                slot = str(row['slot']).strip() if 'slot' in row and pd.notna(row['slot']) else None
+                slot = int(row['slot']) if 'slot' in row and pd.notna(row['slot']) else None
                 
                 # 날짜 파싱
                 try:
