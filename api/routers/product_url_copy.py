@@ -14,7 +14,7 @@ def extract_product_info_from_url(url):
     
     # smartstore.naver.com 또는 brand.naver.com 지원
     if 'smartstore.naver.com' in parsed.netloc or 'm.smartstore.naver.com' in parsed.netloc or 'brand.naver.com' in parsed.netloc:
-        if len(path_parts) >= 3 and path_parts[1] == 'products':
+    if len(path_parts) >= 3 and path_parts[1] == 'products':
             channel_id = path_parts[0]
             product_id = path_parts[2]
             return channel_id, product_id

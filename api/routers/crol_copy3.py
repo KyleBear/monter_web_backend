@@ -247,11 +247,11 @@ def extract_product_id_from_marketplace_url(marketplace_url: str) -> Dict:
             result["product_id"] = item_id_match.group(1)  # itemId 사용
             result["normalized_url"] = marketplace_url
         elif product_id_match:
-            result["marketplace"] = "coupang"
+                result["marketplace"] = "coupang"
             result["product_id"] = product_id_match.group(1)  # products ID 사용
-            result["normalized_url"] = marketplace_url
-        else:
-            result["error"] = "쿠팡 URL에서 상품 ID를 추출할 수 없습니다"
+                result["normalized_url"] = marketplace_url
+            else:
+                result["error"] = "쿠팡 URL에서 상품 ID를 추출할 수 없습니다"
         return result
     
     # 옥션
@@ -450,7 +450,7 @@ def match_marketplace_url_in_naver_link(
                 # 상품 ID 매칭
                 if naver_product_id:
                     if naver_product_id.upper() == product_id.upper():  # 대소문자 무시
-                        return True
+                return True
                     else:
                         return False  # 도메인은 같지만 상품 ID가 다름
                 else:
@@ -458,7 +458,7 @@ def match_marketplace_url_in_naver_link(
                     return False
             
             # 상품 ID가 없거나 도메인과 같은 경우 도메인만으로 매칭
-            return True
+                return True
                 
         except Exception as e:
             logger.debug(f"도메인 매칭 중 오류: {e}")
