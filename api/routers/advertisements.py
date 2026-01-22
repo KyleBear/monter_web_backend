@@ -617,11 +617,11 @@ async def create_advertisement(
     - 총판사는 계정 계층 구조 내의 사용자 지정 가능
     - 광고 등록과 동시에 정산 로그 생성 (order 타입)
     """
-    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
-    # check_edit_time_allowed(
-    #     username=current_user.get("username"),
-    #     user_role=current_user.get("role")
-    # )
+    # 오후 4시 이후 수정 차단 (슈퍼유저 제외)
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     current_username = current_user.get("username")
     current_role = current_user.get("role")
@@ -968,11 +968,11 @@ async def upload_advertisements_csv(
     - start_date (필수): 시작일 (YYYY-MM-DD 형식)
     - end_date (필수): 종료일 (YYYY-MM-DD 형식)
     """
-    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
-    # check_edit_time_allowed(
-    #     username=current_user.get("username"),
-    #     user_role=current_user.get("role")
-    # )
+    # 오후 4시 이후 수정 차단 (슈퍼유저 제외)
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     current_username = current_user.get("username")
     current_role = current_user.get("role")
@@ -1284,11 +1284,11 @@ async def update_advertisement(
     - 광고주: 자신이 등록한 광고만 수정 가능
     - store_url에서 마지막 숫자를 추출하여 product_mid로 저장
     """
-    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
-    # check_edit_time_allowed(
-    #     username=current_user.get("username"),
-    #     user_role=current_user.get("role")
-    # )
+    # 오후 4시 이후 수정 차단 (슈퍼유저 제외)
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     # 광고 조회
     ad = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == ad_id).first()
@@ -1547,11 +1547,11 @@ async def delete_advertisements(
     - 광고주는 사용 불가, 총판사와 대행사만 사용 가능
     - 하드 삭제 (실제 데이터베이스에서 삭제)
     """
-    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
-    # check_edit_time_allowed(
-    #     username=current_user.get("username"),
-    #     user_role=current_user.get("role")
-    # )
+    # 오후 4시 이후 수정 차단 (슈퍼유저 제외)
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     # 광고주는 사용 불가
     current_role = current_user.get("role")
@@ -1707,11 +1707,11 @@ async def extend_advertisements(
     - 광고주는 사용 불가, 대행사와 총판사만 사용 가능
     - 광고 연장과 동시에 정산 로그 생성 (extend 타입)
     """
-    # 오후 4시 30분 이후 수정 차단 (슈퍼유저 제외)
-    # check_edit_time_allowed(
-    #     username=current_user.get("username"),
-    #     user_role=current_user.get("role")
-    # )
+    # 오후 4시 이후 수정 차단 (슈퍼유저 제외)
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     # 광고주는 사용 불가
     current_role = current_user.get("role")
