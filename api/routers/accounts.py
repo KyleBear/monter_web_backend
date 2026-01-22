@@ -582,8 +582,13 @@ async def delete_accounts(
     """
     계정 삭제 API
     - 여러 계정 일괄 삭제
-    - 소프트 삭제 (is_active=False)로 처리
+    - 하드 삭제 (실제 데이터베이스에서 삭제)
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"[계정 삭제] 시작 - 요청 사용자: {current_user.get('username')}, 요청 본문: {delete_request.dict()}")
+    
     # 오후 4시 이후 수정 차단 (슈퍼유저 제외)
     check_edit_time_allowed(
         username=current_user.get("username"),
@@ -592,8 +597,10 @@ async def delete_accounts(
     
     # user_ids 또는 account_ids 중 하나 사용
     user_ids_to_delete = delete_request.get_user_ids()
+    logger.info(f"[계정 삭제] 삭제 대상 계정 ID: {user_ids_to_delete}")
     
     if not user_ids_to_delete:
+        logger.warning("[계정 삭제] 삭제할 계정 ID가 없음")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="삭제할 계정 ID를 제공해야 합니다. (user_ids 또는 account_ids)"
@@ -602,41 +609,64 @@ async def delete_accounts(
     deleted_count = 0
     not_found_ids = []
     
-    for user_id in user_ids_to_delete:
-        user = db.query(UsersAdmin).filter(UsersAdmin.user_id == user_id).first()
+    try:
+        for user_id in user_ids_to_delete:
+            logger.info(f"[계정 삭제] 계정 ID {user_id} 조회 시작")
+            user = db.query(UsersAdmin).filter(UsersAdmin.user_id == user_id).first()
+            
+            if not user:
+                logger.warning(f"[계정 삭제] 계정 ID {user_id}를 찾을 수 없음")
+                not_found_ids.append(user_id)
+                continue
+            
+            logger.info(f"[계정 삭제] 계정 ID {user_id} 발견 - username: {user.username}, role: {user.role}")
+            
+            # 하드 삭제 (users_admin 테이블에서 직접 삭제)
+            db.delete(user)
+            deleted_count += 1
+            logger.info(f"[계정 삭제] 계정 ID {user_id} 삭제 요청 완료 (deleted_count: {deleted_count})")
         
-        if not user:
-            not_found_ids.append(user_id)
-            continue
-        
-        # 관련 광고 확인
-        ad_count = db.query(func.count(AdvertisementsAdmin.ad_id)).filter(
-            AdvertisementsAdmin.user_id == user_id
-        ).scalar() or 0
-        
-        # 소프트 삭제 (is_active=False)
-        user.is_active = False
-        user.updated_at = datetime.now()
-        deleted_count += 1
+        # 모든 삭제 작업 commit
+        if deleted_count > 0:
+            logger.info(f"[계정 삭제] {deleted_count}개 계정 삭제 commit 시작")
+            db.commit()
+            logger.info(f"[계정 삭제] {deleted_count}개 계정 삭제 commit 완료")
+            
+            # 삭제 확인
+            for user_id in user_ids_to_delete:
+                if user_id not in not_found_ids:
+                    verify_user = db.query(UsersAdmin).filter(UsersAdmin.user_id == user_id).first()
+                    if verify_user:
+                        logger.error(f"[계정 삭제] 계정 ID {user_id} 삭제 실패 - 여전히 존재함")
+                    else:
+                        logger.info(f"[계정 삭제] 계정 ID {user_id} 삭제 확인 완료")
+        else:
+            logger.warning("[계정 삭제] 삭제된 계정이 없음")
     
-    db.commit()
+    except HTTPException:
+        logger.error("[계정 삭제] HTTPException 발생", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"[계정 삭제] 예외 발생: {str(e)}", exc_info=True)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"계정 삭제 중 오류가 발생했습니다: {str(e)}"
+        )
     
-    if not_found_ids:
-        return {
-            "success": True,
-            "message": f"{deleted_count}개의 계정이 삭제되었습니다. ({len(not_found_ids)}개 계정을 찾을 수 없음)",
-            "data": {
-                "deleted_count": deleted_count,
-                "not_found_ids": not_found_ids
-            }
-        }
-    
-    return {
+    response_data = {
         "success": True,
         "message": f"선택한 {deleted_count}개의 계정이 삭제되었습니다.",
         "data": {
             "deleted_count": deleted_count
         }
     }
+    
+    if not_found_ids:
+        response_data["message"] = f"{deleted_count}개의 계정이 삭제되었습니다. ({len(not_found_ids)}개 계정을 찾을 수 없음)"
+        response_data["data"]["not_found_ids"] = not_found_ids
+    
+    logger.info(f"[계정 삭제] 완료 - 응답: {response_data}")
+    return response_data
 
 # 현재 비활덩인것만 삭제 
