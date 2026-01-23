@@ -9,10 +9,11 @@ from sqlalchemy import func, or_, and_
 from pydantic import BaseModel
 from typing import Optional, List
 from database import get_db
-from models import AdvertisementsAdmin, UsersAdmin, SettlementAdmin
+from models import AdvertisementsAdmin, UsersAdmin, SettlementAdmin, AdvertisementRankHistory
 from utils.time_check import check_edit_time_allowed
 from utils.auth_helpers import get_current_user
 from datetime import date, datetime, timedelta
+from sqlalchemy import desc
 import pandas as pd
 from io import StringIO
 import re
@@ -210,7 +211,7 @@ def _check_advertisement_ownership(
         # 직접 하위 광고주가 등록한 광고만 수정 가능
         if advertiser.parent_user_id == actual_user_id and advertiser.role == "advertiser":
             return True
-
+        
         return False
     
     elif actual_role == "advertiser":  # 광고주
@@ -359,7 +360,38 @@ async def get_advertisements(
     
     # 광고 목록 구성
     advertisement_list = []
+    today = date.today()
+    
     for ad, user in results:
+        # 1일전, 2일전, 7일전 순위 조회
+        rank_1day_ago = None
+        rank_2days_ago = None
+        rank_7days_ago = None
+        
+        # 1일전 순위
+        rank_1 = db.query(AdvertisementRankHistory).filter(
+            AdvertisementRankHistory.ad_id == ad.ad_id,
+            AdvertisementRankHistory.rank_date == today - timedelta(days=1)
+        ).order_by(desc(AdvertisementRankHistory.created_at)).first()
+        if rank_1:
+            rank_1day_ago = rank_1.rank
+        
+        # 2일전 순위
+        rank_2 = db.query(AdvertisementRankHistory).filter(
+            AdvertisementRankHistory.ad_id == ad.ad_id,
+            AdvertisementRankHistory.rank_date == today - timedelta(days=2)
+        ).order_by(desc(AdvertisementRankHistory.created_at)).first()
+        if rank_2:
+            rank_2days_ago = rank_2.rank
+        
+        # 7일전 순위
+        rank_7 = db.query(AdvertisementRankHistory).filter(
+            AdvertisementRankHistory.ad_id == ad.ad_id,
+            AdvertisementRankHistory.rank_date == today - timedelta(days=7)
+        ).order_by(desc(AdvertisementRankHistory.created_at)).first()
+        if rank_7:
+            rank_7days_ago = rank_7.rank
+        
         advertisement_list.append({
             "ad_id": ad.ad_id,
             "user_id": ad.user_id,
@@ -372,6 +404,9 @@ async def get_advertisements(
             "product_mid": ad.product_mid or "",
             "price_comparison_mid": ad.price_comparison_mid or "",
             "rank": ad.rank,
+            "rank_1day_ago": rank_1day_ago,
+            "rank_2days_ago": rank_2days_ago,
+            "rank_7days_ago": rank_7days_ago,
             "store_url": ad.store_url or "",
             "shopping_url": ad.shopping_url or "",
             "work_days": ad.work_days,
@@ -606,6 +641,100 @@ async def get_advertisement(
             "slot": ad.slot,
             "created_at": ad.created_at.isoformat() if ad.created_at else None,
             "updated_at": ad.updated_at.isoformat() if ad.updated_at else None
+        }
+    }
+
+
+@router.get("/{ad_id}/rank-history")
+async def get_advertisement_rank_history(
+    ad_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    광고 순위 이력 조회 API (모달용)
+    - ad_id를 받아서 최근 7일간의 순위 이력을 반환
+    """
+    # 광고 존재 및 권한 확인
+    ad = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == ad_id).first()
+    
+    if not ad:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="광고를 찾을 수 없습니다."
+        )
+    
+    # 권한 체크
+    user = db.query(UsersAdmin).filter(UsersAdmin.user_id == ad.user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="광고 소유자를 찾을 수 없습니다."
+        )
+    
+    # 권한 필터링 적용하여 조회 가능한지 확인
+    query = db.query(AdvertisementsAdmin, UsersAdmin).join(
+        UsersAdmin, AdvertisementsAdmin.user_id == UsersAdmin.user_id
+    ).filter(AdvertisementsAdmin.ad_id == ad_id)
+    
+    query = _apply_advertisement_permission_filter(query, current_user, db)
+    result = query.first()
+    
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="해당 광고를 조회할 권한이 없습니다."
+        )
+    
+    # 최근 7일간의 순위 이력 조회
+    today = date.today()
+    seven_days_ago = today - timedelta(days=7)
+    
+    rank_history = db.query(AdvertisementRankHistory).filter(
+        AdvertisementRankHistory.ad_id == ad_id,
+        AdvertisementRankHistory.rank_date >= seven_days_ago,
+        AdvertisementRankHistory.rank_date <= today
+    ).order_by(desc(AdvertisementRankHistory.rank_date), desc(AdvertisementRankHistory.created_at)).all()
+    
+    # 일자별로 그룹화 (같은 날짜에 여러 기록이 있을 수 있으므로 최신 것만)
+    rank_by_date = {}
+    for rank_record in rank_history:
+        rank_date_str = rank_record.rank_date.isoformat()
+        # 같은 날짜의 기록이 없거나, 더 최신 기록이면 업데이트
+        # created_at를 datetime 객체로 저장하여 비교 가능하게 함
+        if rank_date_str not in rank_by_date:
+            rank_by_date[rank_date_str] = {
+                "rank_date": rank_record.rank_date.isoformat(),
+                "rank": rank_record.rank,
+                "product_name": rank_record.product_name or "",
+                "created_at": rank_record.created_at  # datetime 객체로 저장
+            }
+        else:
+            # 더 최신 기록이면 업데이트
+            if rank_record.created_at and (not rank_by_date[rank_date_str]['created_at'] or rank_record.created_at > rank_by_date[rank_date_str]['created_at']):
+                rank_by_date[rank_date_str] = {
+                    "rank_date": rank_record.rank_date.isoformat(),
+                    "rank": rank_record.rank,
+                    "product_name": rank_record.product_name or "",
+                    "created_at": rank_record.created_at  # datetime 객체로 저장
+                }
+    
+    # 날짜순으로 정렬 (최신순)
+    rank_list = sorted(rank_by_date.values(), key=lambda x: x['rank_date'], reverse=True)
+    
+    # 반환 시 created_at를 문자열로 변환
+    for rank_item in rank_list:
+        if rank_item['created_at']:
+            rank_item['created_at'] = rank_item['created_at'].isoformat()
+        else:
+            rank_item['created_at'] = None
+    
+    return {
+        "success": True,
+        "data": {
+            "ad_id": ad_id,
+            "ranks": rank_list,
+            "total_days": len(rank_list)
         }
     }
 
@@ -1575,7 +1704,7 @@ async def delete_advertisements(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="광고주는 광고 삭제 API를 사용할 수 없습니다."
-        )
+    )
     
     deleted_count = 0
     not_found_ids = []
@@ -1657,7 +1786,7 @@ async def delete_advertisements(
                         import logging
                         logger = logging.getLogger(__name__)
                         logger.warning(f"광고 ID {ad.ad_id} 기존 정산 로그 조회 실패: {str(e)}")
-
+            
             # 광고 삭제 (하드 삭제)
             db.delete(ad)
             deleted_count += 1
@@ -1735,7 +1864,7 @@ async def extend_advertisements(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="광고주는 광고 연장 API를 사용할 수 없습니다."
-        )
+    )
     
     extended_ads = []
     not_found_ids = []

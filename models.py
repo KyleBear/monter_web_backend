@@ -2,7 +2,7 @@
 SQLAlchemy ORM 모델
 dbml.sql 스키마를 기반으로 생성
 """
-from sqlalchemy import Column, BigInteger, String, Integer, Float, Boolean, DateTime, Text, Date, JSON
+from sqlalchemy import Column, BigInteger, String, Integer, Float, Boolean, DateTime, Text, Date, JSON, Index
 from sqlalchemy.sql import func
 # from sqlalchemy.orm import relationship  # 관계 제거
 from database import Base
@@ -190,6 +190,23 @@ class AdvertisementsAdmin(Base):
     shopping_url = Column(String(500), comment='쇼핑 검색 URL')
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+# 광고 순위 이력 테이블 (2주간 보관)
+class AdvertisementRankHistory(Base):
+    __tablename__ = 'advertisement_rank_history'
+    
+    rank_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    ad_id = Column(BigInteger, nullable=False, comment='광고 ID')
+    rank_date = Column(Date, nullable=False, comment='순위 조회 일자')
+    rank = Column(Integer, nullable=True, comment='순위 (없으면 NULL)')
+    product_name = Column(String(100), nullable=True, comment='상품명')
+    created_at = Column(DateTime, default=func.now(), comment='기록 생성 시간')
+    
+    # 인덱스: ad_id와 rank_date 조합으로 빠른 조회
+    __table_args__ = (
+        Index('idx_ad_rank_date', 'ad_id', 'rank_date'),
+    )
 
 
 # 정산 로그 테이블 (정산로그)

@@ -114,9 +114,12 @@ async def get_accounts(
     }
     
     # 간단한 정보만 반환 (상세 정보는 /detail 사용)
+    current_username = current_user.get("username")
+    current_user_id = current_user.get("user_id")
+    
     account_list = []
     for account in accounts:
-        account_list.append({
+        account_data = {
             "user_id": account.user_id,
             "username": account.username,
             "role": account.role,
@@ -124,7 +127,19 @@ async def get_accounts(
             "memo": account.memo or "",
             "is_active": account.is_active,
             "created_at": account.created_at.isoformat() if account.created_at else None
-        })
+        }
+        
+        # 관리자는 모든 사용자의 password를 볼 수 있음
+        if current_username in ["admin", "monteur"]:
+            account_data["password"] = account.password_hash or ""
+        else:
+            # 관리자가 아닌 경우 자신의 계정만 password 표시
+            if account.user_id == current_user_id:
+                account_data["password"] = account.password_hash or ""
+            else:
+                account_data["password"] = ""
+        
+        account_list.append(account_data)
     
     total_pages = (total + limit - 1) // limit if total > 0 else 1
     
@@ -356,6 +371,19 @@ async def get_account_detail(
     # 통계 정보 계산
     stats = _get_account_stats(account, db)
     
+    # 관리자는 모든 사용자의 password를 볼 수 있음
+    current_username = current_user.get("username")
+    current_user_id = current_user.get("user_id")
+    
+    if current_username in ["admin", "monteur"]:
+        password = account.password_hash or ""
+    else:
+        # 관리자가 아닌 경우 자신의 계정만 password 표시
+        if account.user_id == current_user_id:
+            password = account.password_hash or ""
+        else:
+            password = ""
+    
     return {
         "success": True,
         "data": {
@@ -365,6 +393,7 @@ async def get_account_detail(
             "parent_user_id": account.parent_user_id,
             "affiliation": account.affiliation,
             "memo": account.memo,
+            "password": password,
             "ad_count": stats["ad_count"],
             "active_ad_count": stats["active_ad_count"],
             "is_active": account.is_active,
