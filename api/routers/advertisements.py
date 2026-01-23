@@ -311,10 +311,18 @@ async def get_advertisements(
     # 페이지네이션 계산
     offset = (page - 1) * limit
     
-    # 기본 쿼리 (JOIN users_admin)
-    query = db.query(AdvertisementsAdmin, UsersAdmin).join(
-        UsersAdmin, AdvertisementsAdmin.user_id == UsersAdmin.user_id
-    )
+    # 기본 쿼리 (admin은 LEFT JOIN, 일반 사용자는 INNER JOIN)
+    current_username = current_user.get("username")
+    if current_username in ["admin", "monteur"]:
+        # admin은 사용자가 없어도 광고 조회 가능 (LEFT JOIN)
+        query = db.query(AdvertisementsAdmin, UsersAdmin).outerjoin(
+            UsersAdmin, AdvertisementsAdmin.user_id == UsersAdmin.user_id
+        )
+    else:
+        # 일반 사용자는 INNER JOIN
+        query = db.query(AdvertisementsAdmin, UsersAdmin).join(
+            UsersAdmin, AdvertisementsAdmin.user_id == UsersAdmin.user_id
+        )
     
     # 권한에 따른 조회 범위 필터링 (가장 먼저 적용 - 화면 시작 시부터)
     query = _apply_advertisement_permission_filter(query, current_user, db)
@@ -334,7 +342,16 @@ async def get_advertisements(
         elif search_type == "product_name":
             query = query.filter(AdvertisementsAdmin.product_name.contains(search_keyword))
         elif search_type == "userid":
-            query = query.filter(UsersAdmin.username.contains(search_keyword))
+            # admin은 LEFT JOIN이므로 NULL 체크 필요
+            if current_username in ["admin", "monteur"]:
+                query = query.filter(
+                    or_(
+                        UsersAdmin.username.contains(search_keyword),
+                        UsersAdmin.username.is_(None)  # 사용자가 없는 경우도 포함
+                    )
+                )
+            else:
+                query = query.filter(UsersAdmin.username.contains(search_keyword))
         elif search_type == "keyword":
             query = query.filter(AdvertisementsAdmin.main_keyword.contains(search_keyword))
         elif search_type == "product_id":
@@ -342,15 +359,27 @@ async def get_advertisements(
         elif search_type == "vendor_id":
             query = query.filter(AdvertisementsAdmin.price_comparison_mid.contains(search_keyword))
         elif search_type == "all":
-            query = query.filter(
-                or_(
-                    AdvertisementsAdmin.product_name.contains(search_keyword),
-                    UsersAdmin.username.contains(search_keyword),
-                    AdvertisementsAdmin.main_keyword.contains(search_keyword),
-                    AdvertisementsAdmin.product_mid.contains(search_keyword),
-                    AdvertisementsAdmin.price_comparison_mid.contains(search_keyword)
+            # admin은 LEFT JOIN이므로 username 검색 시 NULL 체크 필요
+            if current_username in ["admin", "monteur"]:
+                query = query.filter(
+                    or_(
+                        AdvertisementsAdmin.product_name.contains(search_keyword),
+                        UsersAdmin.username.contains(search_keyword),
+                        AdvertisementsAdmin.main_keyword.contains(search_keyword),
+                        AdvertisementsAdmin.product_mid.contains(search_keyword),
+                        AdvertisementsAdmin.price_comparison_mid.contains(search_keyword)
+                    )
                 )
-            )
+            else:
+                query = query.filter(
+                    or_(
+                        AdvertisementsAdmin.product_name.contains(search_keyword),
+                        UsersAdmin.username.contains(search_keyword),
+                        AdvertisementsAdmin.main_keyword.contains(search_keyword),
+                        AdvertisementsAdmin.product_mid.contains(search_keyword),
+                        AdvertisementsAdmin.price_comparison_mid.contains(search_keyword)
+                    )
+                )
     
     # 전체 개수 조회
     total = query.count()
@@ -395,7 +424,7 @@ async def get_advertisements(
         advertisement_list.append({
             "ad_id": ad.ad_id,
             "user_id": ad.user_id,
-            "username": user.username,
+            "username": user.username if user else "삭제된 사용자",
             "status": ad.status,
             "main_keyword": ad.main_keyword,
             "price_comparison": ad.price_comparison,
