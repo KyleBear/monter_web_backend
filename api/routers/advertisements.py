@@ -1050,13 +1050,31 @@ async def create_advertisement(
     
     # 트랜잭션 시작 (광고 생성 + 정산 로그 생성)
     try:
-        # 광고 생성 (status 기본값: 'pending')
+        # 광고 생성 (날짜 기반 자동 상태 계산)
         # 사용자의 affiliation을 광고에 저장
         user_affiliation = user.affiliation if user.affiliation else None
         
+        # 날짜 기반 자동 상태 계산
+        today = date.today()
+        auto_status = "pending"  # 기본값
+        
+        if advertisement.start_date and advertisement.end_date:
+            if today < advertisement.start_date:
+                # start_date가 오늘보다 이후(미래)이면 → pending (대기중)
+                auto_status = "pending"
+            elif today > advertisement.end_date:
+                # 오늘 날짜가 end_date 이후이면 → ended
+                auto_status = "ended"
+            elif today == advertisement.end_date - timedelta(days=1):
+                # 오늘 날짜가 end_date 1일전이면 → ending
+                auto_status = "ending"
+            elif advertisement.start_date <= today <= advertisement.end_date:
+                # 오늘이 start_date와 end_date 사이면 → normal
+                auto_status = "normal"
+        
         new_advertisement = AdvertisementsAdmin(
             user_id=target_user_id,
-            status="pending",
+            status=auto_status,  # 날짜 기반 자동 계산된 상태
             main_keyword=main_keyword,
             price_comparison=advertisement.price_comparison,
             plus=advertisement.plus,
@@ -1355,10 +1373,27 @@ async def upload_advertisements_csv(
                     error_count += 1
                     continue
                 
-                # 광고 생성
+                # 광고 생성 (날짜 기반 자동 상태 계산)
+                today = date.today()
+                auto_status = "pending"  # 기본값
+                
+                if start_date and end_date:
+                    if today < start_date:
+                        # start_date가 오늘보다 이후(미래)이면 → pending (대기중)
+                        auto_status = "pending"
+                    elif today > end_date:
+                        # 오늘 날짜가 end_date 이후이면 → ended
+                        auto_status = "ended"
+                    elif today == end_date - timedelta(days=1):
+                        # 오늘 날짜가 end_date 1일전이면 → ending
+                        auto_status = "ending"
+                    elif start_date <= today <= end_date:
+                        # 오늘이 start_date와 end_date 사이면 → normal
+                        auto_status = "normal"
+                
                 new_advertisement = AdvertisementsAdmin(
                     user_id=row_user_id,
-                    status="pending",
+                    status=auto_status,  # 날짜 기반 자동 계산된 상태
                     main_keyword=main_keyword,
                     price_comparison=price_comparison,
                     plus=plus,
@@ -1492,6 +1527,25 @@ async def update_advertisement(
                 detail=f"유효하지 않은 상태입니다. 가능한 상태: {', '.join(valid_statuses)}"
             )
         ad.status = advertisement.status
+    else:
+        # 상태가 제공되지 않았을 때 날짜 기반으로 자동 계산
+        today = date.today()
+        
+        # start_date와 end_date가 있는 경우에만 자동 상태 계산
+        if ad.start_date and ad.end_date:
+            if today < ad.start_date:
+                # start_date가 오늘보다 이전이면 → pending (대기중)
+                ad.status = "pending"
+            elif today > ad.end_date:
+                # 오늘 날짜가 end_date 이후이면 → ended
+                ad.status = "ended"
+            elif today == ad.end_date - timedelta(days=1):
+                # 오늘 날짜가 end_date 1일전이면 → ending
+                ad.status = "ending"
+            elif ad.start_date <= today <= ad.end_date:
+                # 오늘이 start_date와 end_date 사이면 → normal
+                ad.status = "normal"
+            # else는 기존 상태 유지 (error 상태 등은 유지)
     
     # 메인 키워드 변경
     if advertisement.main_keyword:
@@ -1938,10 +1992,28 @@ async def extend_advertisements(
             # work_days 계산
             new_work_days = extend_request.extend_days
             
+            # 날짜 기반 자동 상태 계산
+            today = date.today()
+            auto_status = "pending"  # 기본값
+            
+            if new_start_date and new_end_date:
+                if today < new_start_date:
+                    # start_date가 오늘보다 이후(미래)이면 → pending (대기중)
+                    auto_status = "pending"
+                elif today > new_end_date:
+                    # 오늘 날짜가 end_date 이후이면 → ended
+                    auto_status = "ended"
+                elif today == new_end_date - timedelta(days=1):
+                    # 오늘 날짜가 end_date 1일전이면 → ending
+                    auto_status = "ending"
+                elif new_start_date <= today <= new_end_date:
+                    # 오늘이 start_date와 end_date 사이면 → normal
+                    auto_status = "normal"
+            
             # 새 광고 생성
             new_advertisement = AdvertisementsAdmin(
                 user_id=ad.user_id,
-                status="pending",  # 새 광고는 pending 상태로 시작
+                status=auto_status,  # 날짜 기반 자동 계산된 상태
                 main_keyword=ad.main_keyword,
                 price_comparison=ad.price_comparison,
                 plus=ad.plus,
