@@ -6,13 +6,14 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from pydantic import BaseModel
 from typing import Optional, List
 from database import get_db
 from models import RewardTarget, RewardRank, UsersAdmin
 from utils.auth_helpers import get_current_user
 from datetime import datetime
+import random
 
 router = APIRouter()
 
@@ -60,39 +61,68 @@ async def get_rewards(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    리워드 목록 조회 API
+    리워드 목록 조회 API (랜덤 1개)
     관리자만 접근 가능
     """
     # 관리자 권한 체크
     check_admin_permission(current_user, db)
     
     try:
-        # reward_rank 테이블에서 모든 리워드 조회 (최신순)
-        rewards = db.query(RewardRank).order_by(desc(RewardRank.created_at)).all()
+        # image_url이 있는 리워드만 조회
+        # image_url이 NULL이 아니고 빈 문자열이 아닌 조건
+        query = db.query(RewardRank).filter(
+            RewardRank.image_url.isnot(None),
+            RewardRank.image_url != ''
+        )
+        
+        # 전체 리워드 개수 조회 (image_url이 있는 것만)
+        total_count = query.count()
+        
+        if total_count == 0:
+            return {
+                "success": True,
+                "data": {
+                    "rewards": []
+                }
+            }
+        
+        # 랜덤으로 한 개만 조회
+        # 방법 1: Python에서 랜덤 인덱스 선택 후 조회
+        random_index = random.randint(0, total_count - 1)
+        reward = query.offset(random_index).limit(1).first()
+        
+        # 방법 2 (대안): SQL의 RAND() 함수 사용 (MySQL의 경우)
+        # reward = query.order_by(func.rand()).limit(1).first()
+        
+        if not reward:
+            return {
+                "success": True,
+                "data": {
+                    "rewards": []
+                }
+            }
         
         # 응답 데이터 변환
-        rewards_data = []
-        for reward in rewards:
-            rewards_data.append({
-                "id": reward.reward_id,
-                "reward_id": reward.reward_id,
-                "keyword": reward.keyword or "",
-                "store_name": reward.store_name or "",
-                "product_name": reward.product_name or "",
-                "productid": reward.productid or "",
-                "search_url": reward.search_url or "",
-                "product_url": reward.product_url or "",
-                "image_url": reward.image_url or "",
-                "image_tag": reward.image_tag or "",
-                "nvmid": reward.nvmid or "",
-                "created_at": reward.created_at.isoformat() if reward.created_at else None,
-                "updated_at": reward.updated_at.isoformat() if reward.updated_at else None,
-            })
+        reward_data = {
+            "id": reward.reward_id,
+            "reward_id": reward.reward_id,
+            "keyword": reward.keyword or "",
+            "store_name": reward.store_name or "",
+            "product_name": reward.product_name or "",
+            "productid": reward.productid or "",
+            "search_url": reward.search_url or "",
+            "product_url": reward.product_url or "",
+            "image_url": reward.image_url or "",
+            "image_tag": reward.image_tag or "",
+            "nvmid": reward.nvmid or "",
+            "created_at": reward.created_at.isoformat() if reward.created_at else None,
+            "updated_at": reward.updated_at.isoformat() if reward.updated_at else None,
+        }
         
         return {
             "success": True,
             "data": {
-                "rewards": rewards_data
+                "rewards": [reward_data]
             }
         }
     
