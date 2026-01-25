@@ -1269,6 +1269,150 @@ def update_advertisement_admin_ranks():
         db.close()
 
 
+def update_advertisement_ranks_by_shopping_url():
+    """
+    등록된 모든 광고의 shopping_url을 기준으로 순위를 업데이트하는 함수
+    스케줄러에서 매일 오전 10시에 호출됨
+    
+    shopping_url이 있는 모든 광고에 대해:
+    1. shopping_url에서 URL 타입 감지 (smartstore, coupang, auction, 11st, gmarket, basemall 등)
+    2. 해당 URL 타입에 맞는 크롤링 로직으로 상품명 추출
+    3. 순위 조회 및 업데이트
+    """
+    import sys
+    import os
+    from datetime import date
+    
+    # 현재 파일의 경로에서 프로젝트 루트로 이동
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(os.path.dirname(current_dir))
+    sys.path.insert(0, project_root)
+    
+    from database import SessionLocal
+    from models import AdvertisementsAdmin, AdvertisementRankHistory
+    
+    db = SessionLocal()
+    
+    try:
+        # shopping_url이 있는 모든 광고 조회
+        advertisements = db.query(AdvertisementsAdmin).filter(
+            AdvertisementsAdmin.shopping_url.isnot(None),
+            AdvertisementsAdmin.shopping_url != ''
+        ).all()
+        
+        logger.info(f"총 {len(advertisements)}개 광고의 순위를 shopping_url 기준으로 업데이트합니다.")
+        
+        updated_count = 0
+        error_count = 0
+        
+        for idx, ad in enumerate(advertisements, 1):
+            try:
+                logger.info(f"[{idx}/{len(advertisements)}] Ad ID {ad.ad_id}: shopping_url 업데이트 시작")
+                
+                # update_single_advertisement_rank 호출하여 순위 및 상품명 업데이트
+                result = update_single_advertisement_rank(
+                    ad_id=ad.ad_id,
+                    db_session=db,
+                    shopping_url=ad.shopping_url
+                )
+                
+                # DB에서 최신 정보 다시 조회
+                db.refresh(ad)
+                
+                if result and result.get("rank"):
+                    logger.info(f"✓ Ad ID {ad.ad_id}: 순위 {result.get('rank')} (업데이트 완료)")
+                    updated_count += 1
+                else:
+                    logger.info(f"✗ Ad ID {ad.ad_id}: 순위 없음 (NULL로 설정)")
+                
+                # API 호출 간격 (너무 빠르면 제한될 수 있음)
+                time.sleep(1)
+                
+            except Exception as e:
+                logger.error(f"Ad ID {ad.ad_id} 순위 업데이트 중 오류: {e}", exc_info=True)
+                error_count += 1
+        
+        # 변경사항 커밋
+        db.commit()
+        logger.info(f"✓ 순위 업데이트 완료: 총 {len(advertisements)}개 광고 중 {updated_count}개 순위 발견, {error_count}개 오류")
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"순위 업데이트 중 오류: {e}", exc_info=True)
+        raise
+    finally:
+        db.close()
+
+
+def update_advertisement_statuses_daily():
+    """
+    매일 모든 광고의 상태를 날짜 기준으로 업데이트하는 함수
+    pending → normal → ending → ended 자동 변경
+    매일 00시 01분에 실행됨
+    """
+    import sys
+    import os
+    from datetime import date, timedelta
+    
+    # 현재 파일의 경로에서 프로젝트 루트로 이동
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(os.path.dirname(current_dir))
+    sys.path.insert(0, project_root)
+    
+    from database import SessionLocal
+    from models import AdvertisementsAdmin
+    
+    db = SessionLocal()
+    
+    try:
+        # 모든 활성화된 광고 조회 (ended 제외)
+        advertisements = db.query(AdvertisementsAdmin).filter(
+            AdvertisementsAdmin.start_date.isnot(None),
+            AdvertisementsAdmin.end_date.isnot(None),
+            AdvertisementsAdmin.status != "ended"  # 이미 종료된 광고는 제외
+        ).all()
+        
+        logger.info(f"총 {len(advertisements)}개 광고의 상태를 날짜 기준으로 업데이트합니다.")
+        
+        updated_count = 0
+        today = date.today()
+        
+        for ad in advertisements:
+            old_status = ad.status
+            new_status = old_status
+            
+            # 날짜 기반 자동 상태 계산
+            if today < ad.start_date:
+                # start_date가 오늘보다 이후(미래)이면 → pending (대기중)
+                new_status = "pending"
+            elif today > ad.end_date:
+                # 오늘 날짜가 end_date 이후이면 → ended
+                new_status = "ended"
+            elif today == ad.end_date - timedelta(days=1):
+                # 오늘 날짜가 end_date 1일전이면 → ending
+                new_status = "ending"
+            elif ad.start_date <= today <= ad.end_date:
+                # 오늘이 start_date와 end_date 사이면 → normal
+                new_status = "normal"
+            
+            # 상태가 변경된 경우에만 업데이트
+            if old_status != new_status:
+                ad.status = new_status
+                updated_count += 1
+                logger.info(f"✓ Ad ID {ad.ad_id}: {old_status} → {new_status}")
+        
+        # 변경사항 커밋
+        db.commit()
+        logger.info(f"✓ 상태 업데이트 완료: 총 {len(advertisements)}개 광고 중 {updated_count}개 상태 변경")
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"상태 업데이트 중 오류: {e}", exc_info=True)
+        raise
+    finally:
+        db.close()
+
+
 def main(keyword: str, nvmid: str, product_id: int = None, main_keyword: str = None):
     """
     메인 함수: keyword_search_v3.py의 조합 로직을 사용하여 키워드 조합 생성 후

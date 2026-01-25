@@ -256,4 +256,31 @@ class FAQ(Base):
     updated_by = Column(BigInteger, comment='수정자 user_id')
     created_at = Column(DateTime, server_default=func.current_timestamp(), comment='생성일시')
     updated_at = Column(DateTime, server_default=func.current_timestamp(), onupdate=func.current_timestamp(), comment='수정일시')
+
+
+# 리워드 타겟 테이블
+class RewardTarget(Base):
+    __tablename__ = 'reward_target'
+    
+    reward_target_id = Column(String(100), primary_key=True, comment='리워드 타겟 ID')
+    keyword = Column(String(100), comment='키워드')
+    product_url = Column(String(100), comment='상품 URL')
+
+
+# 리워드 순위 테이블
+class RewardRank(Base):
+    __tablename__ = 'reward_rank'
+    
+    reward_id = Column(BigInteger, primary_key=True, autoincrement=True, comment='리워드 ID')
+    keyword = Column(String(100), comment='키워드')
+    store_name = Column(String(255), comment='스토어명')
+    product_name = Column(String(255), comment='상품명')
+    productid = Column(String(50), comment='상품 ID')
+    search_url = Column(String(2000), comment='검색 URL')
+    product_url = Column(String(400), comment='상품 URL')
+    image_url = Column(Text, comment='이미지 URL')
+    image_tag = Column(Text, comment='이미지 태그')
+    created_at = Column(DateTime, default=func.now(), comment='생성일시')
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment='수정일시')
+    nvmid = Column(String(100), comment='네이버 상품 ID')
     

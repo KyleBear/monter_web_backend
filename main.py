@@ -6,9 +6,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+import atexit
+import logging
 
 # API 라우터 임포트
-from api.routers import auth, accounts, advertisements, settlements, notices
+from api.routers import auth, accounts, advertisements, settlements, notices, rewards
+
+# 로깅 설정
+logger = logging.getLogger(__name__)
 
 # FastAPI 앱 생성
 app = FastAPI(
@@ -41,6 +48,7 @@ app.include_router(accounts.router, prefix="/accounts", tags=["계정 관리"])
 app.include_router(advertisements.router, prefix="/advertisements", tags=["광고 관리"])
 app.include_router(settlements.router, prefix="/settlements", tags=["정산 로그"])
 app.include_router(notices.router, prefix="/notices", tags=["공지사항 및 FAQ"])
+app.include_router(rewards.router, prefix="/rewards", tags=["리워드 관리"])
 
 # 로컬개발용 API 라우터 등록
 # app.include_router(auth.router, prefix="/api/auth", tags=["인증"])
@@ -62,6 +70,55 @@ async def root():
 async def health_check():
     """헬스 체크 엔드포인트"""
     return {"status": "healthy"}
+
+
+# 스케줄러 설정
+scheduler = BackgroundScheduler()
+
+def schedule_status_update():
+    """매일 00시 01분에 실행되는 광고 상태 업데이트 함수"""
+    try:
+        from api.routers.crol import update_advertisement_statuses_daily
+        logger.info("스케줄러: 광고 상태 업데이트 시작")
+        update_advertisement_statuses_daily()
+        logger.info("스케줄러: 광고 상태 업데이트 완료")
+    except Exception as e:
+        logger.error(f"스케줄러 상태 업데이트 중 오류: {e}", exc_info=True)
+
+def schedule_rank_update():
+    """매일 오전 10시에 실행되는 순위 업데이트 함수"""
+    try:
+        from api.routers.crol import update_advertisement_ranks_by_shopping_url
+        logger.info("스케줄러: 순위 업데이트 시작")
+        update_advertisement_ranks_by_shopping_url()
+        logger.info("스케줄러: 순위 업데이트 완료")
+    except Exception as e:
+        logger.error(f"스케줄러 순위 업데이트 중 오류: {e}", exc_info=True)
+
+# 매일 00시 01분에 광고 상태 업데이트 실행
+scheduler.add_job(
+    schedule_status_update,
+    trigger=CronTrigger(hour=0, minute=1),
+    id='update_statuses_daily',
+    replace_existing=True
+)
+
+# 매일 오전 10시에 순위 업데이트 실행
+scheduler.add_job(
+    schedule_rank_update,
+    trigger=CronTrigger(hour=10, minute=0),
+    id='update_ranks_by_shopping_url_daily',
+    replace_existing=True
+)
+
+# 스케줄러 시작
+scheduler.start()
+logger.info("스케줄러가 시작되었습니다.")
+logger.info("- 매일 00시 01분: 광고 상태 업데이트 (pending→normal→ending→ended)")
+logger.info("- 매일 오전 10시: 순위 업데이트")
+
+# 서버 종료 시 스케줄러 종료
+atexit.register(lambda: scheduler.shutdown())
 
 
 if __name__ == "__main__":
