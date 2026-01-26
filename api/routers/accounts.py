@@ -654,7 +654,7 @@ async def delete_accounts(
             db.delete(user)
             deleted_count += 1
             logger.info(f"[계정 삭제] 계정 ID {user_id} 삭제 요청 완료 (deleted_count: {deleted_count})")
-        
+    
         # 모든 삭제 작업 commit
         if deleted_count > 0:
             logger.info(f"[계정 삭제] {deleted_count}개 계정 삭제 commit 시작")

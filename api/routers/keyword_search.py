@@ -17,10 +17,6 @@ from itertools import combinations
 from urllib.parse import quote, urlparse, parse_qs
 from dotenv import load_dotenv
 import json
-# GUI 관련 import 제거 (tkinter는 FastAPI에서 사용하지 않음)
-# import tkinter as tk
-# from tkinter import ttk, messagebox, scrolledtext, filedialog
-# import threading
 from datetime import datetime, date
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import Queue
@@ -993,32 +989,61 @@ class BrowserPool:
             # 브라우저 반환 (정상 종료 또는 오류 후)
             if driver:
                 try:
-                    # 브라우저 상태 확인 및 정리
-                    driver.get("about:blank")  # 빈 페이지로 이동하여 상태 초기화
-                    if self.pool.qsize() < self.pool_size:
-                        self.pool.put(driver)
-                    else:
-                        # 풀이 가득 차면 브라우저 종료
-                        driver.quit()
+                    # 브라우저 상태 확인
+                    try:
+                        # 브라우저가 살아있는지 확인
+                        driver.current_url
+                        # 브라우저 상태 확인 및 정리
+                        driver.get("about:blank")  # 빈 페이지로 이동하여 상태 초기화
+                        
+                        if self.pool.qsize() < self.pool_size:
+                            self.pool.put(driver)
+                        else:
+                            # 풀이 가득 차면 브라우저 종료
+                            driver.quit()
+                    except Exception as e:
+                        # 브라우저가 죽었으면 종료 시도 후 무시
+                        logger.debug(f"브라우저 상태 확인 실패 (종료 처리): {e}")
+                        try:
+                            driver.quit()
+                        except:
+                            pass
                 except Exception as e:
-                    # 브라우저가 죽었으면 새로 생성하지 않고 종료
-                    logger.debug(f"브라우저 반환 중 오류 (브라우저 종료): {e}")
-                try:
-                    driver.quit()
-                except:
-                    pass
+                    # 최종 안전장치: 모든 예외 무시
+                    logger.debug(f"브라우저 반환 중 최종 오류 (무시): {e}")
+                    try:
+                        driver.quit()
+                    except:
+                        pass
     
     def close_all(self):
         """모든 브라우저 종료"""
         logger.info("브라우저 풀 종료 중...")
+        closed_count = 0
+        error_count = 0
+        
         while not self.pool.empty():
             try:
                 driver = self.pool.get_nowait()
-                driver.quit()
+                try:
+                    # 브라우저가 살아있는지 확인
+                    driver.current_url
+                    driver.quit()
+                    closed_count += 1
+                except Exception as e:
+                    # 이미 종료된 브라우저는 무시
+                    logger.debug(f"브라우저가 이미 종료됨: {e}")
+                    error_count += 1
+                    try:
+                        driver.quit()  # 한 번 더 시도
+                    except:
+                        pass
             except Exception as e:
-                logger.debug(f"브라우저 종료 중 오류: {e}")
+                logger.debug(f"브라우저 풀에서 가져오기 실패: {e}")
+                error_count += 1
+        
         self._initialized = False
-        logger.info("브라우저 풀 종료 완료")
+        logger.info(f"브라우저 풀 종료 완료 (종료: {closed_count}개, 오류: {error_count}개)")
 
 
 # ============================================================================
@@ -1220,6 +1245,9 @@ def main(keyword: str, nvmid: str, product_id: int = None, main_keyword: str = N
 
 # GUI 클래스 제거됨 - keyword_search_api.py에서 FastAPI 라우터로 대체
 # GUI 코드는 완전히 제거되었습니다
+
+
+# GUI 실행 코드 제거됨 - FastAPI로 대체
 
 
 # GUI 실행 코드 제거됨 - FastAPI로 대체

@@ -398,13 +398,13 @@ def get_rank_by_keyword_and_url(keyword: str, url: str) -> Dict:
                     break
                 
                 logger.debug(f"페이지 {page} 검색 완료: {len(api_results)}개 결과 (start={start})")
-                
-                # 3. URL 타입에 따라 매칭 방식 결정
-                if url_type == "smartstore":
-                    # product_id 다이렉트 매칭
-                    target_id = product_id
-                    for item in api_results:
-                        product_id_from_api = str(item.get("productId", "")).strip()
+        
+        # 3. URL 타입에 따라 매칭 방식 결정
+        if url_type == "smartstore":
+            # product_id 다이렉트 매칭
+            target_id = product_id
+            for item in api_results:
+                product_id_from_api = str(item.get("productId", "")).strip()
                         
                         # link URL에서 product_id 추출 시도
                         link = item.get("link", "")
@@ -425,9 +425,9 @@ def get_rank_by_keyword_and_url(keyword: str, url: str) -> Dict:
                         # product_id 매칭 (productId 또는 link에서 추출한 값)
                         if (product_id_from_api and product_id_from_api == target_id) or \
                            (product_id_from_link and product_id_from_link == target_id):
-                            result["success"] = True
-                            result["rank"] = item.get("rank")
-                            result["product_name"] = item.get("product_name", "")
+                    result["success"] = True
+                    result["rank"] = item.get("rank")
+                    result["product_name"] = item.get("product_name", "")
                             
                             # api_productId가 실제로는 nvmid이므로 이를 사용
                             # link에서 nvmid 추출 시도 (없으면 api_productId 사용)
@@ -454,50 +454,50 @@ def get_rank_by_keyword_and_url(keyword: str, url: str) -> Dict:
                             result["link"] = link  # 디버깅용
                             
                             logger.info(f"product_id 매칭 성공: api_productId={product_id_from_api} (nvmid), link_productId={product_id_from_link} (product_id), target={target_id}, rank={result['rank']}, nvmid={nvmid} (페이지 {page})")
-                            return result
-                
-                elif url_type == "shopping":
-                    # nvmid 링크 매칭
-                    target_nvmid = nvmid
+                    return result
+        
+        elif url_type == "shopping":
+            # nvmid 링크 매칭
+            target_nvmid = nvmid
                     if page == 1:
                         logger.info(f"쇼핑 URL nvmid 매칭 시작: target_nvmid={target_nvmid}, 검색 결과 수={len(api_results)}")
                     
                     for idx, item in enumerate(api_results, 1):
-                        # 방법 1: productId가 nvmid일 수 있음
-                        product_id = str(item.get("productId", "")).strip()
-                        
-                        # 방법 2: link URL에서 nvmid 추출
-                        link = item.get("link", "")
-                        nvmid_from_link = None
-                        
-                        if link:
-                            patterns = [
-                                r'nv_mid[=_](\d+)',
-                                r'nvmid[=_](\d+)',
-                                r'nv-mid[=_](\d+)',
-                                r'/catalog/(\d+)',
+                # 방법 1: productId가 nvmid일 수 있음
+                product_id = str(item.get("productId", "")).strip()
+                
+                # 방법 2: link URL에서 nvmid 추출
+                link = item.get("link", "")
+                nvmid_from_link = None
+                
+                if link:
+                    patterns = [
+                        r'nv_mid[=_](\d+)',
+                        r'nvmid[=_](\d+)',
+                        r'nv-mid[=_](\d+)',
+                        r'/catalog/(\d+)',
                                 r'catalog/(\d+)',  # 추가 패턴
-                            ]
-                            
-                            for pattern in patterns:
-                                match = re.search(pattern, link, re.IGNORECASE)
-                                if match:
-                                    nvmid_from_link = match.group(1)
-                                    break
-                        
+                    ]
+                    
+                    for pattern in patterns:
+                        match = re.search(pattern, link, re.IGNORECASE)
+                        if match:
+                            nvmid_from_link = match.group(1)
+                            break
+                
                         # 디버깅 로그 (첫 페이지의 처음 5개만)
                         if page == 1 and idx <= 5:
                             logger.debug(f"매칭 시도 [{idx}]: productId={product_id}, link={link[:100]}, link_nvmid={nvmid_from_link}, target={target_nvmid}")
                         
-                        # nvmid 매칭
-                        if (product_id and product_id == target_nvmid) or \
-                           (nvmid_from_link and nvmid_from_link == target_nvmid):
-                            result["success"] = True
-                            result["rank"] = item.get("rank")
-                            result["product_name"] = item.get("product_name", "")
+                # nvmid 매칭
+                if (product_id and product_id == target_nvmid) or \
+                   (nvmid_from_link and nvmid_from_link == target_nvmid):
+                    result["success"] = True
+                    result["rank"] = item.get("rank")
+                    result["product_name"] = item.get("product_name", "")
                             result["nvmid"] = nvmid  # nvmid 명시적으로 설정
                             logger.info(f"nvmid 매칭 성공: productId={product_id}, link_nvmid={nvmid_from_link}, target={target_nvmid}, rank={result['rank']}, product_name={result['product_name']} (페이지 {page})")
-                            return result
+                    return result
                 
                 # 마지막 페이지면 중단
                 if len(api_results) < display:
@@ -1015,14 +1015,29 @@ def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Opt
             
             # rank와 product_name 업데이트 (SQLAlchemy NULL 처리: None이면 NULL로 저장)
             ad.rank = rank
-            # product_name이 빈 문자열이거나 None이면 명시적으로 None으로 설정 (SQLAlchemy에서 NULL로 저장)
-            if product_name is not None and not product_name.strip():
+            
+            # product_name 처리: 새로 가져온 값이 있으면 업데이트, 없으면 기존 값 유지
+            if product_name is not None and product_name.strip():
+                # 새로 가져온 상품명이 있으면 업데이트
+                ad.product_name = product_name.strip()
+                logger.info(f"✓ Ad ID {ad_id}: 상품명 업데이트 완료: {product_name[:50]}...")
+            elif product_name is not None and not product_name.strip():
+                # 빈 문자열이면 None으로 설정
                 product_name = None
-            ad.product_name = product_name  # None이면 SQLAlchemy가 NULL로 저장
-            if product_name:
-                logger.info(f"✓ Ad ID {ad_id}: 상품명 업데이트 완료: {product_name}")
+                # 기존 상품명이 있으면 유지, 없으면 None
+                if not ad.product_name or not ad.product_name.strip():
+                    ad.product_name = None
+                    logger.info(f"✓ Ad ID {ad_id}: 상품명을 NULL로 업데이트 완료 (크롤링 실패, 기존 값도 없음)")
+                else:
+                    logger.info(f"✓ Ad ID {ad_id}: 크롤링 실패, 기존 상품명 유지: {ad.product_name[:50]}...")
             else:
-                logger.info(f"✓ Ad ID {ad_id}: 상품명을 NULL로 업데이트 완료 (크롤링 실패)")
+                # product_name이 None인 경우: 기존 값 유지
+                if not ad.product_name or not ad.product_name.strip():
+                    ad.product_name = None
+                    logger.info(f"✓ Ad ID {ad_id}: 상품명을 NULL로 업데이트 완료 (크롤링 실패, 기존 값도 없음)")
+                else:
+                    logger.info(f"✓ Ad ID {ad_id}: 크롤링 실패, 기존 상품명 유지: {ad.product_name[:50]}...")
+                    product_name = ad.product_name  # rank_history 저장을 위해 product_name 변수 업데이트
             
             # 순위 이력 저장 (2주간 보관)
             from datetime import date
@@ -1271,17 +1286,18 @@ def update_advertisement_admin_ranks():
 
 def update_advertisement_ranks_by_shopping_url():
     """
-    등록된 모든 광고의 shopping_url을 기준으로 순위를 업데이트하는 함수
+    등록된 모든 광고의 shopping_url 또는 store_url을 기준으로 순위를 업데이트하는 함수
     스케줄러에서 매일 오전 10시에 호출됨
     
-    shopping_url이 있는 모든 광고에 대해:
-    1. shopping_url에서 URL 타입 감지 (smartstore, coupang, auction, 11st, gmarket, basemall 등)
+    shopping_url 또는 store_url이 있는 모든 광고에 대해:
+    1. URL 타입 감지 (smartstore, coupang, auction, 11st, gmarket, basemall 등)
     2. 해당 URL 타입에 맞는 크롤링 로직으로 상품명 추출
     3. 순위 조회 및 업데이트
     """
     import sys
     import os
     from datetime import date
+    from sqlalchemy import or_, and_
     
     # 현재 파일의 경로에서 프로젝트 루트로 이동
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1294,25 +1310,41 @@ def update_advertisement_ranks_by_shopping_url():
     db = SessionLocal()
     
     try:
-        # shopping_url이 있는 모든 광고 조회
+        # shopping_url 또는 store_url이 있는 모든 광고 조회
         advertisements = db.query(AdvertisementsAdmin).filter(
-            AdvertisementsAdmin.shopping_url.isnot(None),
-            AdvertisementsAdmin.shopping_url != ''
+            or_(
+                and_(
+                    AdvertisementsAdmin.shopping_url.isnot(None),
+                    AdvertisementsAdmin.shopping_url != ''
+                ),
+                and_(
+                    AdvertisementsAdmin.store_url.isnot(None),
+                    AdvertisementsAdmin.store_url != ''
+                )
+            )
         ).all()
         
-        logger.info(f"총 {len(advertisements)}개 광고의 순위를 shopping_url 기준으로 업데이트합니다.")
+        logger.info(f"총 {len(advertisements)}개 광고의 순위를 shopping_url 또는 store_url 기준으로 업데이트합니다.")
         
         updated_count = 0
         error_count = 0
         
         for idx, ad in enumerate(advertisements, 1):
             try:
-                logger.info(f"[{idx}/{len(advertisements)}] Ad ID {ad.ad_id}: shopping_url 업데이트 시작")
+                # URL 정보 로깅
+                url_info = []
+                if ad.shopping_url:
+                    url_info.append(f"shopping_url={ad.shopping_url[:50]}...")
+                if ad.store_url:
+                    url_info.append(f"store_url={ad.store_url[:50]}...")
+                logger.info(f"[{idx}/{len(advertisements)}] Ad ID {ad.ad_id}: 순위 업데이트 시작 ({', '.join(url_info)})")
                 
                 # update_single_advertisement_rank 호출하여 순위 및 상품명 업데이트
+                # store_url은 shopping_url이 없을 때만 전달 (shopping_url 우선)
                 result = update_single_advertisement_rank(
                     ad_id=ad.ad_id,
                     db_session=db,
+                    store_url=ad.store_url if not ad.shopping_url else None,  # shopping_url이 있으면 store_url은 None
                     shopping_url=ad.shopping_url
                 )
                 

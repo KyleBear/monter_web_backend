@@ -200,11 +200,48 @@ async def extract_main_keywords(
             rank = selected["rank"]
             
             try:
-                # 네이버 쇼핑 API로 상품 정보 조회
-                api_results = get_shopping_rank_with_ad_flag(keyword, display=1, start=1)
+                # 네이버 쇼핑 API로 상품 정보 조회 (nvmid 매칭을 위해 더 많은 결과 가져오기)
+                api_results = get_shopping_rank_with_ad_flag(keyword, display=100, start=1)
                 
                 if api_results and len(api_results) > 0:
-                    item = api_results[0]
+                    # request.nvmid와 일치하는 상품 찾기
+                    target_nvmid = str(request.nvmid).strip()
+                    item = None
+                    
+                    for result_item in api_results:
+                        # 방법 1: productId가 nvmid와 일치하는지 확인
+                        product_id = str(result_item.get("productId", "")).strip()
+                        if product_id == target_nvmid:
+                            item = result_item
+                            break
+                        
+                        # 방법 2: link URL에서 nvmid 추출하여 비교
+                        link = result_item.get("link", "")
+                        if link:
+                            nvmid_patterns = [
+                                r'nv_mid[=_](\d+)',  # nv_mid= 또는 nv_mid_
+                                r'nvmid[=_](\d+)',   # nvmid= 또는 nvmid_
+                                r'nv-mid[=_](\d+)',  # nv-mid= 또는 nv-mid_
+                            ]
+                            
+                            for pattern in nvmid_patterns:
+                                match = re.search(pattern, link, re.IGNORECASE)
+                                if match and match.group(1) == target_nvmid:
+                                    item = result_item
+                                    break
+                        
+                        if item:
+                            break
+                    
+                    # nvmid 매칭 성공 여부 확인
+                    nvmid_matched = item is not None
+                    
+                    # nvmid와 일치하는 상품을 찾지 못한 경우 첫 번째 결과 사용 (기존 동작 유지)
+                    if not item:
+                        item = api_results[0]
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.warning(f"키워드 '{keyword}'로 검색한 결과에서 nvmid '{target_nvmid}'를 찾지 못해 첫 번째 결과 사용 (이미지 URL 저장 안함)")
                     
                     # search_url 생성
                     encoded_keyword = quote(keyword)
@@ -222,6 +259,9 @@ async def extract_main_keywords(
                     elif '<' in raw_product_name or '>' in raw_product_name:
                         logger.warning(f"HTML 태그가 여전히 포함됨: '{raw_product_name[:100]}...'")
                     
+                    # 이미지 URL: nvmid 매칭 성공한 경우에만 저장
+                    image_url = item.get("image", "") if nvmid_matched else ""
+                    
                     # reward_rank 테이블에 저장
                     reward_rank = RewardRank(
                         keyword=keyword,
@@ -230,7 +270,7 @@ async def extract_main_keywords(
                         productid=item.get("productId", ""),
                         search_url=search_url,
                         product_url=request.product_url or "",
-                        image_url=item.get("image", ""),
+                        image_url=image_url,  # 매칭 실패 시 빈 문자열
                         image_tag="",  # 나중에 업데이트 가능
                         nvmid=request.nvmid
                     )

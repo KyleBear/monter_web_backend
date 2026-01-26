@@ -98,11 +98,47 @@ def schedule_rank_update():
     except Exception as e:
         logger.error(f"스케줄러 순위 업데이트 중 오류: {e}", exc_info=True)
 
+def schedule_reward_target_processing():
+    """주기적으로 reward_target을 처리하여 reward_rank에 저장"""
+    try:
+        from api.routers.rewards import process_reward_targets
+        logger.info("스케줄러: reward_target 처리 시작")
+        process_reward_targets()
+        logger.info("스케줄러: reward_target 처리 완료")
+    except Exception as e:
+        logger.error(f"스케줄러 reward_target 처리 중 오류: {e}", exc_info=True)
+
+def schedule_tag_crawling():
+    """매일 02시에 태그 크롤링 실행"""
+    try:
+        from api.routers.keyword_search_api2 import crawl_tags_for_all_rewards
+        logger.info("스케줄러: 태그 크롤링 시작")
+        crawled_count = crawl_tags_for_all_rewards(headless=True, delay=5)
+        logger.info(f"스케줄러: 태그 크롤링 완료 (크롤링된 레코드: {crawled_count}개)")
+    except Exception as e:
+        logger.error(f"스케줄러 태그 크롤링 중 오류: {e}", exc_info=True)
+
 # 매일 00시 01분에 광고 상태 업데이트 실행
 scheduler.add_job(
     schedule_status_update,
     trigger=CronTrigger(hour=0, minute=1),
     id='update_statuses_daily',
+    replace_existing=True
+)
+
+# 매일 01시에 reward_target 처리 실행
+scheduler.add_job(
+    schedule_reward_target_processing,
+    trigger=CronTrigger(hour=1, minute=0),  # 매일 01시
+    id='process_reward_targets',
+    replace_existing=True
+)
+
+# 매일 02시에 태그 크롤링 실행
+scheduler.add_job(
+    schedule_tag_crawling,
+    trigger=CronTrigger(hour=2, minute=0),  # 매일 02시
+    id='crawl_tags_daily',
     replace_existing=True
 )
 
@@ -118,6 +154,8 @@ scheduler.add_job(
 scheduler.start()
 logger.info("스케줄러가 시작되었습니다.")
 logger.info("- 매일 00시 01분: 광고 상태 업데이트 (pending→normal→ending→ended)")
+logger.info("- 매일 01시: reward_target 처리 (reward_rank에 저장)")
+logger.info("- 매일 02시: 태그 크롤링 (reward_rank 테이블)")
 logger.info("- 매일 오전 10시: 순위 업데이트")
 
 # 서버 종료 시 스케줄러 종료

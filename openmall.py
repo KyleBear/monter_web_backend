@@ -315,7 +315,7 @@ def match_marketplace_url_in_naver_link(marketplace: str, product_id: str, naver
             naver_goodscode = match.group(1)
             return naver_goodscode == product_id
         return False
-    
+        
     return False
 
 

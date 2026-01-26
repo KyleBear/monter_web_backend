@@ -854,7 +854,7 @@ async def create_advertisement(
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="계정 계층 구조 내의 사용자만 지정할 수 있습니다."
-                )
+            )
     # 슈퍼유저는 모든 사용자 지정 가능 (추가 체크 불필요)
     
     # 사용자 존재 확인
@@ -1870,10 +1870,10 @@ async def delete_advertisements(
                         logger = logging.getLogger(__name__)
                         logger.warning(f"광고 ID {ad.ad_id} 기존 정산 로그 조회 실패: {str(e)}")
             
-            # 광고 삭제 (하드 삭제)
-            db.delete(ad)
-            deleted_count += 1
-        
+        # 광고 삭제 (하드 삭제)
+        db.delete(ad)
+        deleted_count += 1
+    
         # commit도 try-except로 감싸기
         try:
             db.commit()
@@ -2057,9 +2057,9 @@ async def extend_advertisements(
                 "original_ad_id": ad.ad_id,
                 "new_ad_id": new_advertisement.ad_id,
                 "new_start_date": new_start_date.isoformat(),
-                "new_end_date": new_end_date.isoformat(),
-                "settlement_id": new_settlement.settlement_id
-            })
+                    "new_end_date": new_end_date.isoformat(),
+                    "settlement_id": new_settlement.settlement_id
+                })
         
         except Exception as e:
             db.rollback()
