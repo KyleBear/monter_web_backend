@@ -46,12 +46,24 @@ def check_admin_permission(current_user: dict, db: Session):
 # ==================== Pydantic 모델 ====================
 
 class KeywordCombination(BaseModel):
-    query_keyword: str
-    acq_keyword: str
+    # 프론트엔드 호환성을 위해 두 가지 형식 모두 지원
+    query_keyword: Optional[str] = None
+    acq_keyword: Optional[str] = None
+    query: Optional[str] = None  # 프론트엔드 형식
+    acq: Optional[str] = None    # 프론트엔드 형식
+    
+    def get_query(self) -> str:
+        """query_keyword 또는 query 반환"""
+        return self.query_keyword or self.query or ""
+    
+    def get_acq(self) -> str:
+        """acq_keyword 또는 acq 반환"""
+        return self.acq_keyword or self.acq or ""
 
 
 class RewardLinkCreate(BaseModel):
     product_name: Optional[str] = None
+    short_link: Optional[str] = None  # 프론트엔드에서 생성한 링크 (선택사항)
     keywords: List[KeywordCombination] = []
 
 
@@ -61,8 +73,18 @@ class RewardLinkUpdate(BaseModel):
 
 
 class KeywordAdd(BaseModel):
-    query_keyword: str
-    acq_keyword: str
+    query_keyword: Optional[str] = None
+    acq_keyword: Optional[str] = None
+    query: Optional[str] = None  # 프론트엔드 형식
+    acq: Optional[str] = None    # 프론트엔드 형식
+    
+    def get_query(self) -> str:
+        """query_keyword 또는 query 반환"""
+        return self.query_keyword or self.query or ""
+    
+    def get_acq(self) -> str:
+        """acq_keyword 또는 acq 반환"""
+        return self.acq_keyword or self.acq or ""
 
 
 # ==================== 유틸리티 함수 ====================
@@ -267,9 +289,10 @@ async def create_link(
     check_admin_permission(current_user, db)
     
     try:
-        # 짧은 코드 생성 (중복 체크)
+        # 짧은 코드 자동 생성 (백엔드에서 항상 생성)
         max_attempts = 10
         short_code = None
+        
         for _ in range(max_attempts):
             candidate = generate_short_code(10)
             existing = db.query(RewardLink).filter(RewardLink.short_code == candidate).first()
@@ -292,13 +315,21 @@ async def create_link(
         db.flush()
         
         # 키워드 조합 저장
+        keyword_count = 0
         for kw in link_data.keywords:
+            query = kw.get_query()
+            acq = kw.get_acq()
+            
+            if not query or not acq:
+                continue  # 빈 키워드는 건너뛰기
+            
             keyword = RewardLinkKeyword(
                 link_id=new_link.link_id,
-                query_keyword=kw.query_keyword,
-                acq_keyword=kw.acq_keyword
+                query_keyword=query,
+                acq_keyword=acq
             )
             db.add(keyword)
+            keyword_count += 1
         
         db.commit()
         db.refresh(new_link)
@@ -310,7 +341,7 @@ async def create_link(
                 "link_id": new_link.link_id,
                 "short_code": new_link.short_code,
                 "product_name": new_link.product_name,
-                "keyword_count": len(link_data.keywords),
+                "keyword_count": keyword_count,
                 "short_url": f"/redirect/{new_link.short_code}"
             }
         }
@@ -361,10 +392,16 @@ async def update_link(
             
             # 새 키워드 추가
             for kw in link_data.keywords:
+                query = kw.get_query()
+                acq = kw.get_acq()
+                
+                if not query or not acq:
+                    continue  # 빈 키워드는 건너뛰기
+                
                 keyword = RewardLinkKeyword(
                     link_id=link_id,
-                    query_keyword=kw.query_keyword,
-                    acq_keyword=kw.acq_keyword
+                    query_keyword=query,
+                    acq_keyword=acq
                 )
                 db.add(keyword)
         
@@ -413,11 +450,20 @@ async def add_keyword(
                 detail=f"링크를 찾을 수 없습니다: {link_id}"
             )
         
+        query = keyword_data.get_query()
+        acq = keyword_data.get_acq()
+        
+        if not query or not acq:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="query와 acq 키워드를 모두 입력해주세요."
+            )
+        
         # 키워드 조합 추가
         keyword = RewardLinkKeyword(
             link_id=link_id,
-            query_keyword=keyword_data.query_keyword,
-            acq_keyword=keyword_data.acq_keyword
+            query_keyword=query,
+            acq_keyword=acq
         )
         db.add(keyword)
         db.commit()
