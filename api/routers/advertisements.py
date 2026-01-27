@@ -1737,8 +1737,7 @@ async def update_advertisement(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"광고 수정 중 데이터베이스 오류가 발생했습니다: {str(e)}"
             )
-        
-        # 여기까지 도달하면 성공, return 실행
+
         return {
             "success": True,
             "message": "광고가 수정되었습니다.",
@@ -1795,26 +1794,27 @@ async def delete_advertisements(
     
     try:
         for ad_id in delete_request.ad_ids:
-            ad = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == ad_id).first()
+            try:
+                ad = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == ad_id).first()
+        
+                if not ad:
+                    not_found_ids.append(ad_id)
+                    continue
             
-            if not ad:
-                not_found_ids.append(ad_id)
-                continue
+                # 권한 체크 (총판사/대행사는 하위 계정의 광고도 삭제 가능)
+                if not _check_advertisement_ownership(ad, current_user, db):
+                    unauthorized_ids.append(ad_id)
+                    continue
             
-            # 권한 체크 (총판사/대행사는 하위 계정의 광고도 삭제 가능)
-            if not _check_advertisement_ownership(ad, current_user, db):
-                unauthorized_ids.append(ad_id)
-                continue
-            
-            # 광고주 정보 조회
-            user = db.query(UsersAdmin).filter(UsersAdmin.user_id == ad.user_id).first()
-            if user:
-                # 작업 수행자 ID (실제로 삭제한 유저)
-                current_username = current_user.get("username")
-                performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
-                performed_by_user_id = performed_by_user.user_id if performed_by_user else None
-                performed_by_role = performed_by_user.role if performed_by_user else None
-                
+                # 광고주 정보 조회
+                user = db.query(UsersAdmin).filter(UsersAdmin.user_id == ad.user_id).first()
+                if user:
+                    # 작업 수행자 ID (실제로 삭제한 유저)
+                    current_username = current_user.get("username")
+                    performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+                    performed_by_user_id = performed_by_user.user_id if performed_by_user else None
+                    performed_by_role = performed_by_user.role if performed_by_user else None
+                    
                 # 작업 수행자의 role에 따라 advertiser_user_id와 agency_user_id 결정
                 if performed_by_role == "agency":
                     # 대행사가 삭제한 경우
@@ -1870,10 +1870,17 @@ async def delete_advertisements(
                         logger = logging.getLogger(__name__)
                         logger.warning(f"광고 ID {ad.ad_id} 기존 정산 로그 조회 실패: {str(e)}")
             
-        # 광고 삭제 (하드 삭제)
-        db.delete(ad)
-        deleted_count += 1
-    
+                # 광고 삭제 (하드 삭제)
+                db.delete(ad)
+                deleted_count += 1
+            except Exception as e:
+                # 개별 광고 삭제 중 오류 발생 시 로그만 남기고 계속 진행
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"광고 ID {ad_id} 삭제 중 오류: {str(e)}", exc_info=True)
+                not_found_ids.append(ad_id)  # 오류 발생 시 not_found로 처리
+                continue
+        
         # commit도 try-except로 감싸기
         try:
             db.commit()
@@ -2028,38 +2035,38 @@ async def extend_advertisements(
             
             db.add(new_advertisement)
             db.flush()  # ad_id를 얻기 위해 flush
-            
+                
             # 정산 로그 생성 (extend 타입)
             agency_user_id = user.parent_user_id if user.role == "advertiser" else None
-            
+                
             # 작업 수행자 ID (실제로 연장한 유저)
             current_username = current_user.get("username")
             performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
             performed_by_user_id = performed_by_user.user_id if performed_by_user else None
-            
+                
             new_settlement = SettlementAdmin(
-                settlement_type="extend",
-                agency_user_id=agency_user_id,
-                advertiser_user_id=ad.user_id,
-                ad_id=new_advertisement.ad_id,
-                performed_by_user_id=performed_by_user_id,
-                quantity=1,
-                period_start=new_start_date,
-                period_end=new_end_date,
-                total_days=new_work_days,
-                start_date=new_start_date,
-                ad_product_nm=ad.product_name
+            settlement_type="extend",
+            agency_user_id=agency_user_id,
+            advertiser_user_id=ad.user_id,
+            ad_id=new_advertisement.ad_id,
+            performed_by_user_id=performed_by_user_id,
+            quantity=1,
+            period_start=new_start_date,
+            period_end=new_end_date,
+            total_days=new_work_days,
+            start_date=new_start_date,
+            ad_product_nm=ad.product_name
             )
-            
+                
             db.add(new_settlement)
             
             extended_ads.append({
-                "original_ad_id": ad.ad_id,
-                "new_ad_id": new_advertisement.ad_id,
-                "new_start_date": new_start_date.isoformat(),
-                    "new_end_date": new_end_date.isoformat(),
-                    "settlement_id": new_settlement.settlement_id
-                })
+            "original_ad_id": ad.ad_id,
+            "new_ad_id": new_advertisement.ad_id,
+            "new_start_date": new_start_date.isoformat(),
+            "new_end_date": new_end_date.isoformat(),
+            "settlement_id": new_settlement.settlement_id
+            })
         
         except Exception as e:
             db.rollback()

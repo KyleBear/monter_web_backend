@@ -311,6 +311,55 @@ async def update_reward_image_tag(
         )
 
 
+@router.put("/{reward_id}/public")
+async def update_reward_image_tag_public(
+    reward_id: int,
+    update_data: RewardImageTagUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    리워드 이미지 태그 업데이트 API (공개, 인증 불필요)
+    
+    Args:
+        reward_id: 리워드 ID
+        update_data: 이미지 태그 정보
+    """
+    try:
+        # 리워드 조회
+        reward = db.query(RewardRank).filter(RewardRank.reward_id == reward_id).first()
+        
+        if not reward:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"리워드를 찾을 수 없습니다: {reward_id}"
+            )
+        
+        # 이미지 태그 업데이트
+        reward.image_tag = update_data.image_tag
+        reward.updated_at = datetime.now()
+        
+        db.commit()
+        db.refresh(reward)
+        
+        return {
+            "success": True,
+            "message": "이미지 태그가 업데이트되었습니다.",
+            "data": {
+                "reward_id": reward.reward_id,
+                "image_tag": reward.image_tag
+            }
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"이미지 태그 업데이트 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
 # ==================== reward_target 처리 함수 ====================
 
 def extract_nvmid_from_product_url(product_url: str) -> Optional[str]:

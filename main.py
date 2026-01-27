@@ -12,7 +12,7 @@ import atexit
 import logging
 
 # API 라우터 임포트
-from api.routers import auth, accounts, advertisements, settlements, notices, rewards
+from api.routers import auth, accounts, advertisements, settlements, notices, rewards, rewards_link
 from api.routers import keyword_search_api, keyword_search_api2
 
 # 로깅 설정
@@ -50,6 +50,7 @@ app.include_router(advertisements.router, prefix="/advertisements", tags=["광�
 app.include_router(settlements.router, prefix="/settlements", tags=["정산 로그"])
 app.include_router(notices.router, prefix="/notices", tags=["공지사항 및 FAQ"])
 app.include_router(rewards.router, prefix="/rewards", tags=["리워드 관리"])
+app.include_router(rewards_link.router, prefix="/rewards", tags=["리워드 링크 관리"])
 app.include_router(keyword_search_api.router, prefix="/keyword-search", tags=["키워드 검색"])
 app.include_router(keyword_search_api2.router, prefix="/keyword-extract", tags=["키워드 추출"])
 
@@ -171,4 +172,7 @@ if __name__ == "__main__":
         # reload=True  # 개발 모드: 코드 변경 시 자동 재시작
         reload=False  # 개발 모드: 코드 변경 시 자동 재시작
     )
+
+
+
 

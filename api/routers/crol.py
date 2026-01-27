@@ -398,71 +398,71 @@ def get_rank_by_keyword_and_url(keyword: str, url: str) -> Dict:
                     break
                 
                 logger.debug(f"페이지 {page} 검색 완료: {len(api_results)}개 결과 (start={start})")
-        
-        # 3. URL 타입에 따라 매칭 방식 결정
-        if url_type == "smartstore":
+                
+                # 3. URL 타입에 따라 매칭 방식 결정
+                if url_type == "smartstore":
             # product_id 다이렉트 매칭
             target_id = product_id
             for item in api_results:
                 product_id_from_api = str(item.get("productId", "")).strip()
-                        
-                        # link URL에서 product_id 추출 시도
-                        link = item.get("link", "")
-                        product_id_from_link = None
-                        
-                        if link:
-                            # link에서 product_id 패턴 찾기
-                            link_patterns = [
-                                r'/products/(\d+)',  # /products/숫자
-                            ]
-                            
-                            for pattern in link_patterns:
-                                match = re.search(pattern, link, re.IGNORECASE)
-                                if match:
-                                    product_id_from_link = match.group(1)
-                                    break
-                        
-                        # product_id 매칭 (productId 또는 link에서 추출한 값)
-                        if (product_id_from_api and product_id_from_api == target_id) or \
-                           (product_id_from_link and product_id_from_link == target_id):
+                
+                # link URL에서 product_id 추출 시도
+                link = item.get("link", "")
+                product_id_from_link = None
+                
+                if link:
+                    # link에서 product_id 패턴 찾기
+                    link_patterns = [
+                        r'/products/(\d+)',  # /products/숫자
+                    ]
+                    
+                    for pattern in link_patterns:
+                        match = re.search(pattern, link, re.IGNORECASE)
+                        if match:
+                            product_id_from_link = match.group(1)
+                            break
+                
+                # product_id 매칭 (productId 또는 link에서 추출한 값)
+                if (product_id_from_api and product_id_from_api == target_id) or \
+                   (product_id_from_link and product_id_from_link == target_id):
                     result["success"] = True
                     result["rank"] = item.get("rank")
                     result["product_name"] = item.get("product_name", "")
-                            
-                            # api_productId가 실제로는 nvmid이므로 이를 사용
-                            # link에서 nvmid 추출 시도 (없으면 api_productId 사용)
-                            nvmid_from_link = None
-                            
-                            if link:
-                                patterns = [
-                                    r'nv_mid[=_](\d+)',
-                                    r'nvmid[=_](\d+)',
-                                    r'nv-mid[=_](\d+)',
-                                    r'/catalog/(\d+)',
-                                    r'catalog/(\d+)',
-                                ]
-                                
-                                for pattern in patterns:
-                                    match = re.search(pattern, link, re.IGNORECASE)
-                                    if match:
-                                        nvmid_from_link = match.group(1)
-                                        break
-                            
-                            # nvmid 설정: link에서 추출한 값이 있으면 사용, 없으면 api_productId 사용
-                            nvmid = nvmid_from_link if nvmid_from_link else product_id_from_api
-                            result["nvmid"] = nvmid
-                            result["link"] = link  # 디버깅용
-                            
-                            logger.info(f"product_id 매칭 성공: api_productId={product_id_from_api} (nvmid), link_productId={product_id_from_link} (product_id), target={target_id}, rank={result['rank']}, nvmid={nvmid} (페이지 {page})")
+                    
+                    # api_productId가 실제로는 nvmid이므로 이를 사용
+                    # link에서 nvmid 추출 시도 (없으면 api_productId 사용)
+                    nvmid_from_link = None
+                    
+                    if link:
+                        patterns = [
+                            r'nv_mid[=_](\d+)',
+                            r'nvmid[=_](\d+)',
+                            r'nv-mid[=_](\d+)',
+                            r'/catalog/(\d+)',
+                            r'catalog/(\d+)',
+                        ]
+                        
+                        for pattern in patterns:
+                            match = re.search(pattern, link, re.IGNORECASE)
+                            if match:
+                                nvmid_from_link = match.group(1)
+                                break
+                    
+                    # nvmid 설정: link에서 추출한 값이 있으면 사용, 없으면 api_productId 사용
+                    nvmid = nvmid_from_link if nvmid_from_link else product_id_from_api
+                    result["nvmid"] = nvmid
+                    result["link"] = link  # 디버깅용
+                    
+                    logger.info(f"product_id 매칭 성공: api_productId={product_id_from_api} (nvmid), link_productId={product_id_from_link} (product_id), target={target_id}, rank={result['rank']}, nvmid={nvmid} (페이지 {page})")
                     return result
-        
-        elif url_type == "shopping":
+                
+                elif url_type == "shopping":
             # nvmid 링크 매칭
             target_nvmid = nvmid
-                    if page == 1:
-                        logger.info(f"쇼핑 URL nvmid 매칭 시작: target_nvmid={target_nvmid}, 검색 결과 수={len(api_results)}")
-                    
-                    for idx, item in enumerate(api_results, 1):
+            if page == 1:
+                logger.info(f"쇼핑 URL nvmid 매칭 시작: target_nvmid={target_nvmid}, 검색 결과 수={len(api_results)}")
+            
+            for idx, item in enumerate(api_results, 1):
                 # 방법 1: productId가 nvmid일 수 있음
                 product_id = str(item.get("productId", "")).strip()
                 
@@ -476,7 +476,7 @@ def get_rank_by_keyword_and_url(keyword: str, url: str) -> Dict:
                         r'nvmid[=_](\d+)',
                         r'nv-mid[=_](\d+)',
                         r'/catalog/(\d+)',
-                                r'catalog/(\d+)',  # 추가 패턴
+                        r'catalog/(\d+)',  # 추가 패턴
                     ]
                     
                     for pattern in patterns:
@@ -485,18 +485,18 @@ def get_rank_by_keyword_and_url(keyword: str, url: str) -> Dict:
                             nvmid_from_link = match.group(1)
                             break
                 
-                        # 디버깅 로그 (첫 페이지의 처음 5개만)
-                        if page == 1 and idx <= 5:
-                            logger.debug(f"매칭 시도 [{idx}]: productId={product_id}, link={link[:100]}, link_nvmid={nvmid_from_link}, target={target_nvmid}")
-                        
+                # 디버깅 로그 (첫 페이지의 처음 5개만)
+                if page == 1 and idx <= 5:
+                    logger.debug(f"매칭 시도 [{idx}]: productId={product_id}, link={link[:100]}, link_nvmid={nvmid_from_link}, target={target_nvmid}")
+                
                 # nvmid 매칭
                 if (product_id and product_id == target_nvmid) or \
                    (nvmid_from_link and nvmid_from_link == target_nvmid):
                     result["success"] = True
                     result["rank"] = item.get("rank")
                     result["product_name"] = item.get("product_name", "")
-                            result["nvmid"] = nvmid  # nvmid 명시적으로 설정
-                            logger.info(f"nvmid 매칭 성공: productId={product_id}, link_nvmid={nvmid_from_link}, target={target_nvmid}, rank={result['rank']}, product_name={result['product_name']} (페이지 {page})")
+                    result["nvmid"] = nvmid  # nvmid 명시적으로 설정
+                    logger.info(f"nvmid 매칭 성공: productId={product_id}, link_nvmid={nvmid_from_link}, target={target_nvmid}, rank={result['rank']}, product_name={result['product_name']} (페이지 {page})")
                     return result
                 
                 # 마지막 페이지면 중단

@@ -76,7 +76,7 @@ class ClientIDRotator:
             
             # 실패한 계정 제외하고 사용 가능한 계정만 필터링
             available_accounts = [acc for i, acc in enumerate(self.accounts) 
-                                 if i not in self.failed_accounts]
+                                    if i not in self.failed_accounts]
             
             if not available_accounts:
                 # 모든 계정이 실패한 경우, 실패 목록 초기화 후 재시도
@@ -227,10 +227,10 @@ def get_shopping_rank_with_ad_flag(
                 "X-Naver-Client-Secret": client_secret,
             }
             
-            # API 요청
+        # API 요청
             response = requests.get(API_URL, headers=headers, params=params, timeout=10)
-            
-            # 401 Unauthorized 오류 시 다른 계정으로 재시도
+                
+                # 401 Unauthorized 오류 시 다른 계정으로 재시도
             if response.status_code == 401:
                 logger.warning(f"401 Unauthorized - 계정 {client_id} 인증 실패, 다른 계정으로 재시도...")
                 client_rotator.mark_failed(client_id)
@@ -239,7 +239,7 @@ def get_shopping_rank_with_ad_flag(
                     continue
                 else:
                     response.raise_for_status()
-            
+        
             # 429 Too Many Requests 오류 시 다른 계정으로 재시도
             if response.status_code == 429:
                 logger.warning(f"429 Too Many Requests - 계정 {client_id} 제한 초과, 다른 계정으로 재시도...")
@@ -993,14 +993,7 @@ class BrowserPool:
                     try:
                         # 브라우저가 살아있는지 확인
                         driver.current_url
-                        # 브라우저 상태 확인 및 정리
                         driver.get("about:blank")  # 빈 페이지로 이동하여 상태 초기화
-                        
-                        if self.pool.qsize() < self.pool_size:
-                            self.pool.put(driver)
-                        else:
-                            # 풀이 가득 차면 브라우저 종료
-                            driver.quit()
                     except Exception as e:
                         # 브라우저가 죽었으면 종료 시도 후 무시
                         logger.debug(f"브라우저 상태 확인 실패 (종료 처리): {e}")
@@ -1008,13 +1001,27 @@ class BrowserPool:
                             driver.quit()
                         except:
                             pass
+                        return  # 브라우저가 죽었으면 반환하지 않음
+                    
+                    if self.pool.qsize() < self.pool_size:
+                        self.pool.put(driver)
+                    else:
+                        # 풀이 가득 차면 브라우저 종료
+                        driver.quit()
                 except Exception as e:
-                    # 최종 안전장치: 모든 예외 무시
-                    logger.debug(f"브라우저 반환 중 최종 오류 (무시): {e}")
+                    # 브라우저가 죽었으면 종료 시도 후 무시
+                    logger.debug(f"브라우저 상태 확인 실패 (종료 처리): {e}")
                     try:
                         driver.quit()
                     except:
                         pass
+                except Exception as e:
+                    # 최종 안전장치: 모든 예외 무시
+                    logger.debug(f"브라우저 반환 중 최종 오류 (무시): {e}")
+                try:
+                    driver.quit()
+                except:
+                    pass
     
     def close_all(self):
         """모든 브라우저 종료"""
@@ -1243,16 +1250,5 @@ def main(keyword: str, nvmid: str, product_id: int = None, main_keyword: str = N
 # GUI 애플리케이션 (제거됨 - FastAPI로 대체)
 # ============================================================================
 
-# GUI 클래스 제거됨 - keyword_search_api.py에서 FastAPI 라우터로 대체
-# GUI 코드는 완전히 제거되었습니다
 
 
-# GUI 실행 코드 제거됨 - FastAPI로 대체
-
-
-# GUI 실행 코드 제거됨 - FastAPI로 대체
-"""
-if __name__ == "__main__":
-    # GUI 실행 코드 제거됨
-    pass
-"""

@@ -190,7 +190,7 @@ class AdvertisementsAdmin(Base):
     shopping_url = Column(String(500), comment='쇼핑 검색 URL')
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
-
+    
 
 # 광고 순위 이력 테이블 (2주간 보관)
 class AdvertisementRankHistory(Base):
@@ -287,4 +287,27 @@ class RewardRank(Base):
     nvmid = Column(String(100), comment='네이버 상품 ID')
     is_shopping_exposed = Column(Boolean, default=False, comment='통검 노출여부 (boolean)')
     cpc = Column(Boolean, default=False, comment='CPC 여부 (boolean)')
+
+
+# 리워드 링크 테이블 (짧은 링크 관리)
+class RewardLink(Base):
+    __tablename__ = 'reward_link'
+    
+    link_id = Column(BigInteger, primary_key=True, autoincrement=True, comment='링크 ID')
+    short_code = Column(String(20), unique=True, nullable=False, comment='짧은 링크 코드 (예: v8ZSBUT43vj)')
+    product_name = Column(String(255), comment='상품명')
+    created_at = Column(DateTime, default=func.now(), comment='생성일시')
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment='수정일시')
+
+
+# 리워드 링크 키워드 조합 테이블
+class RewardLinkKeyword(Base):
+    __tablename__ = 'reward_link_keyword'
+    
+    keyword_id = Column(BigInteger, primary_key=True, autoincrement=True, comment='키워드 ID')
+    link_id = Column(BigInteger, nullable=False, comment='링크 ID')
+    query_keyword = Column(String(255), nullable=False, comment='query 파라미터 키워드')
+    acq_keyword = Column(String(255), nullable=False, comment='acq 파라미터 키워드')
+    created_at = Column(DateTime, default=func.now(), comment='생성일시')
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment='수정일시')
     
