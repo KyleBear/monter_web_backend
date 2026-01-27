@@ -65,6 +65,8 @@ class RewardLinkCreate(BaseModel):
     product_name: Optional[str] = None
     short_link: Optional[str] = None  # 프론트엔드에서 생성한 링크 (선택사항)
     keywords: List[KeywordCombination] = []
+    query_list: Optional[List[str]] = None  # query 키워드 리스트
+    acq_list: Optional[List[str]] = None    # acq 키워드 리스트
 
 
 class RewardLinkUpdate(BaseModel):
@@ -136,6 +138,7 @@ async def get_all_links(
                 "link_id": link.link_id,
                 "short_code": link.short_code,
                 "product_name": link.product_name or "",
+                "reward_link": link.reward_link or "",  # reward_link 포함
                 "keyword_count": len(keyword_list),
                 "keywords": keyword_list,
                 "created_at": link.created_at.isoformat() if link.created_at else None,
@@ -200,6 +203,7 @@ async def get_link_by_code(
                     "link_id": link.link_id,
                     "short_code": link.short_code,
                     "product_name": link.product_name or "",
+                    "reward_link": link.reward_link or "",  # reward_link 포함
                     "keywords": keyword_list
                 }
             }
@@ -285,11 +289,58 @@ async def create_link(
 ):
     """
     새 링크 생성 (관리자용)
+    query_list와 acq_list가 제공되면 모든 조합을 생성
+    keywords가 제공되면 그대로 사용
+    각 조합마다 별도의 link_id를 생성하되, 모두 같은 short_code를 사용
     """
     check_admin_permission(current_user, db)
     
     try:
-        # 짧은 코드 자동 생성 (백엔드에서 항상 생성)
+        # query_list와 acq_list가 제공되면 모든 조합 생성
+        keyword_combinations = []
+        
+        if link_data.query_list and link_data.acq_list:
+            # 모든 조합 생성
+            logger.info(f"query_list 개수: {len(link_data.query_list)}, acq_list 개수: {len(link_data.acq_list)}")
+            for query in link_data.query_list:
+                if not query or not query.strip():
+                    continue
+                for acq in link_data.acq_list:
+                    if not acq or not acq.strip():
+                        continue
+                    keyword_combinations.append({
+                        "query": query.strip(),
+                        "acq": acq.strip()
+                    })
+            logger.info(f"생성된 조합 개수: {len(keyword_combinations)}")
+        elif link_data.keywords:
+            # keywords가 제공되면 그대로 사용
+            for kw in link_data.keywords:
+                query = kw.get_query()
+                acq = kw.get_acq()
+                if query and acq:
+                    keyword_combinations.append({
+                        "query": query,
+                        "acq": acq
+                    })
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="query_list/acq_list 또는 keywords를 제공해주세요."
+            )
+        
+        if len(keyword_combinations) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="유효한 키워드 조합이 없습니다."
+            )
+        
+        # 입력 데이터 로깅
+        logger.info(f"링크 생성 요청: product_name={link_data.product_name}, 조합 개수={len(keyword_combinations)}")
+        for idx, comb in enumerate(keyword_combinations):
+            logger.info(f"  조합[{idx}]: query={comb['query']}, acq={comb['acq']}")
+        
+        # 하나의 short_code 생성 (모든 레코드가 공유)
         max_attempts = 10
         short_code = None
         
@@ -306,43 +357,97 @@ async def create_link(
                 detail="짧은 코드 생성에 실패했습니다. 다시 시도해주세요."
             )
         
-        # 링크 생성
-        new_link = RewardLink(
-            short_code=short_code,
-            product_name=link_data.product_name
-        )
-        db.add(new_link)
-        db.flush()
+        logger.info(f"생성된 short_code (공통): {short_code}")
         
-        # 키워드 조합 저장
-        keyword_count = 0
-        for kw in link_data.keywords:
-            query = kw.get_query()
-            acq = kw.get_acq()
+        # 네이버 URL 생성을 위한 import
+        from urllib.parse import quote
+        
+        # 각 키워드 조합마다 별도의 reward_link 레코드 생성 (모두 같은 short_code 사용)
+        created_links = []
+        saved_keywords = []
+        
+        for idx, comb in enumerate(keyword_combinations):
+            query = comb['query']
+            acq = comb['acq']
             
-            if not query or not acq:
-                continue  # 빈 키워드는 건너뛰기
+            logger.info(f"조합[{idx}] 처리 시작: query='{query}', acq='{acq}'")
             
+            # 각 조합마다 네이버 검색 URL 생성 (reward_link에 저장)
+            ackey = generate_random_ackey(8)
+            acr = random.randint(0, 10)
+            
+            naver_url = (
+                f"https://m.search.naver.com/search.naver?"
+                f"sm=mtp_sug.top&"
+                f"where=m&"
+                f"query={quote(query)}&"
+                f"ackey={ackey}&"
+                f"acq={quote(acq)}&"
+                f"acr={acr}&"
+                f"qdt=0"
+            )
+            
+            logger.info(f"조합[{idx}] - 생성된 네이버 URL: {naver_url}")
+            
+            # 각 키워드 조합마다 별도의 reward_link 레코드 생성 (같은 short_code 사용)
+            new_link = RewardLink(
+                short_code=short_code,  # 모두 같은 short_code 사용
+                product_name=link_data.product_name,
+                reward_link=naver_url  # 네이버 검색 URL 저장
+            )
+            db.add(new_link)
+            db.flush()  # link_id를 얻기 위해 flush
+            
+            logger.info(f"조합[{idx}] - 생성된 link_id: {new_link.link_id}, short_code: {short_code}, reward_link: {naver_url}")
+            
+            # 각 reward_link에 하나의 키워드 조합만 저장
             keyword = RewardLinkKeyword(
-                link_id=new_link.link_id,
+                link_id=new_link.link_id,  # 각각 다른 link_id
                 query_keyword=query,
                 acq_keyword=acq
             )
             db.add(keyword)
-            keyword_count += 1
+            db.flush()  # keyword_id를 얻기 위해 flush
+            
+            logger.info(f"조합[{idx}] 저장 완료: link_id={new_link.link_id}, keyword_id={keyword.keyword_id}, query='{query}', acq='{acq}'")
+            
+            created_links.append({
+                "link_id": new_link.link_id,
+                "short_code": new_link.short_code,  # 모두 같은 short_code
+                "reward_link": new_link.reward_link,  # 각각 다른 네이버 URL
+                "keyword_id": keyword.keyword_id,
+                "query": query,
+                "acq": acq
+            })
+            
+            saved_keywords.append({
+                "link_id": new_link.link_id,
+                "query": query,
+                "acq": acq
+            })
+        
+        if len(created_links) == 0:
+            db.rollback()
+            logger.error("저장된 링크가 없습니다. 롤백합니다.")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="링크 생성에 실패했습니다. short_code 생성에 문제가 있을 수 있습니다."
+            )
         
         db.commit()
-        db.refresh(new_link)
+        
+        logger.info(f"링크 생성 완료: 총 {len(created_links)}개의 링크 생성됨 (모두 같은 short_code: {short_code})")
+        for link_info in created_links:
+            logger.info(f"  - link_id={link_info['link_id']}, short_code={link_info['short_code']}, reward_link={link_info['reward_link']}, query='{link_info['query']}', acq='{link_info['acq']}'")
         
         return {
             "success": True,
-            "message": "링크가 생성되었습니다.",
+            "message": f"{len(created_links)}개의 링크가 생성되었습니다.",
             "data": {
-                "link_id": new_link.link_id,
-                "short_code": new_link.short_code,
-                "product_name": new_link.product_name,
-                "keyword_count": keyword_count,
-                "short_url": f"/redirect/{new_link.short_code}"
+                "short_code": short_code,  # 공통 short_code 반환
+                "created_count": len(created_links),
+                "links": created_links,  # 생성된 모든 링크 정보 (같은 short_code, 각각 다른 네이버 URL)
+                "keywords": saved_keywords  # 저장된 키워드 목록
             }
         }
     
@@ -408,13 +513,29 @@ async def update_link(
         db.commit()
         db.refresh(link)
         
+        # 업데이트된 키워드 조합 조회
+        keywords = db.query(RewardLinkKeyword).filter(
+            RewardLinkKeyword.link_id == link_id
+        ).all()
+        
+        keyword_list = [
+            {
+                "keyword_id": kw.keyword_id,
+                "query_keyword": kw.query_keyword,
+                "acq_keyword": kw.acq_keyword
+            }
+            for kw in keywords
+        ]
+        
         return {
             "success": True,
             "message": "링크가 수정되었습니다.",
             "data": {
                 "link_id": link.link_id,
                 "short_code": link.short_code,
-                "product_name": link.product_name
+                "product_name": link.product_name,
+                "reward_link": link.reward_link or "",  # reward_link 포함
+                "keywords": keyword_list
             }
         }
     
