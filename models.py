@@ -294,7 +294,7 @@ class RewardLink(Base):
     __tablename__ = 'reward_link'
     
     link_id = Column(BigInteger, primary_key=True, autoincrement=True, comment='링크 ID')
-    short_code = Column(String(40), unique=True, nullable=False, comment='짧은 링크 코드 (예: v8ZSBUT43vj)')
+    short_code = Column(String(40), nullable=False, comment='짧은 링크 코드 (예: v8ZSBUT43vj)')
     product_name = Column(String(255), comment='상품명')
     reward_link = Column(Text, comment='생성된 리다이렉트 링크 (예: https://domain.com/redirect/v8ZSBUT43vj)')
     created_at = Column(DateTime, default=func.now(), comment='생성일시')

@@ -7,7 +7,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from database import get_db, SessionLocal
 from models import RewardRank, RewardTarget, UsersAdmin, ProxyIP
 from utils.auth_helpers import get_current_user
@@ -591,9 +591,9 @@ def click_by_nvmid(driver, nvmid):
         return False
 
 
-def crawl_image_tag(search_url: str, nvmid: str, reward_id: int, headless: bool = True) -> Optional[str]:
+def crawl_image_tag(search_url: str, nvmid: str, reward_id: int, headless: bool = True) -> Tuple[Optional[str], Optional[str]]:
     """
-    search_url로 접속 후 nvmid로 상품 클릭하여 이미지 태그 크롤링
+    search_url로 접속 후 nvmid로 상품 클릭하여 이미지 태그 및 이미지 URL 크롤링
     
     Args:
         search_url: 검색 URL
@@ -602,7 +602,7 @@ def crawl_image_tag(search_url: str, nvmid: str, reward_id: int, headless: bool 
         headless: Headless 모드
     
     Returns:
-        str: 크롤링한 태그 텍스트 또는 None
+        tuple: (태그 텍스트, 이미지 URL) 또는 (None, None)
     """
     driver = None
     user_data_dir = None
@@ -658,8 +658,43 @@ def crawl_image_tag(search_url: str, nvmid: str, reward_id: int, headless: bool 
         click_success = click_by_nvmid(driver, nvmid)
         
         if not click_success:
+            logger.error(f"\n{'='*60}")
             logger.error(f"[태그 크롤링] ❌ reward_id={reward_id}: 상품 클릭 실패 (nvmid={nvmid})")
-            return None
+            logger.error(f"{'='*60}")
+            logger.error(f"현재 페이지 URL: {driver.current_url if driver else 'N/A'}")
+            
+            try:
+                if driver:
+                    html_source = driver.page_source
+                    logger.error(f"HTML 소스 길이: {len(html_source)} bytes")
+                    
+                    # nvmid가 포함된 링크 확인
+                    soup = BeautifulSoup(html_source, 'html.parser')
+                    links_with_nvmid = soup.find_all('a', href=lambda x: x and nvmid in str(x))
+                    logger.error(f"nvmid({nvmid})가 포함된 링크 개수: {len(links_with_nvmid)}")
+                    
+                    if links_with_nvmid:
+                        logger.error("발견된 nvmid 링크:")
+                        for idx, link in enumerate(links_with_nvmid[:5], 1):
+                            href = link.get('href', '')
+                            text = link.get_text(strip=True)
+                            logger.error(f"  [{idx}] href: {href[:150]}, 텍스트: '{text[:50]}'")
+                    else:
+                        logger.error("⚠️ nvmid가 포함된 링크를 찾을 수 없음")
+                    
+                    # data-nv-mid 속성 확인
+                    elements_with_nvmid = soup.find_all(attrs={'data-nv-mid': nvmid})
+                    logger.error(f"data-nv-mid={nvmid} 속성을 가진 요소 개수: {len(elements_with_nvmid)}")
+                    
+                    # 보안문자 감지
+                    if 'captcha' in html_source.lower() or '보안문자' in html_source or '자동입력 방지' in html_source:
+                        logger.error("⚠️ 보안문자 감지됨!")
+                    
+            except Exception as e:
+                logger.error(f"클릭 실패 분석 중 오류: {e}", exc_info=True)
+            
+            logger.error(f"{'='*60}\n")
+            return (None, None)
         
         # 상품 페이지 로딩 대기
         time.sleep(random.uniform(3, 5))
@@ -674,8 +709,8 @@ def crawl_image_tag(search_url: str, nvmid: str, reward_id: int, headless: bool 
         driver.execute_script("window.scrollTo(0, 0);")
         time.sleep(random.uniform(1, 2))
         
-        # 5단계: 태그 크롤링 (BeautifulSoup + lxml XPath 사용)
-        logger.info("[태그 크롤링] 태그 크롤링 시작...")
+        # 5단계: 태그 및 이미지 URL 크롤링 (BeautifulSoup + lxml XPath 사용)
+        logger.info("[태그 크롤링] 태그 및 이미지 URL 크롤링 시작...")
         logger.info(f"[태그 크롤링] 현재 URL: {driver.current_url}")
         
         # 추가 대기 시간 (동적 콘텐츠 로딩 대기)
@@ -683,6 +718,8 @@ def crawl_image_tag(search_url: str, nvmid: str, reward_id: int, headless: bool 
         time.sleep(random.uniform(2, 4))
         
         tag_value = None
+        image_url_value = None
+        
         try:
             # Selenium에서 HTML 소스 가져오기
             html_source = driver.page_source
@@ -691,6 +728,142 @@ def crawl_image_tag(search_url: str, nvmid: str, reward_id: int, headless: bool 
             # BeautifulSoup으로 파싱
             soup = BeautifulSoup(html_source, 'html.parser')
             
+            # ========== 이미지 URL 크롤링 ==========
+            logger.info("[이미지 URL 크롤링] 이미지 URL 크롤링 시작...")
+            
+            # 방법 1: alt="대표이미지" 속성으로 찾기 (우선)
+            logger.info("[이미지 URL 크롤링] alt='대표이미지' 속성으로 이미지 찾기 시도...")
+            try:
+                img_with_alt = soup.find('img', alt='대표이미지')
+                if img_with_alt:
+                    image_url_value = img_with_alt.get('src') or img_with_alt.get('data-src')
+                    if image_url_value:
+                        image_url_value = image_url_value.strip()
+                        logger.info(f"[이미지 URL 크롤링] ✅ 이미지 URL 크롤링 성공 (alt='대표이미지'): {image_url_value[:100]}...")
+            except Exception as e:
+                logger.warning(f"[이미지 URL 크롤링] alt 속성 검색 실패: {e}")
+            
+            # 방법 2: 상대 XPath로 이미지 찾기
+            if not image_url_value:
+                relative_xpath = '//*[@id="content"]/div/div[2]/div[1]/div[1]/div[2]/img'
+                logger.info(f"[이미지 URL 크롤링] 상대 XPath 시도: {relative_xpath}")
+                
+                try:
+                    parser = etree.HTMLParser()
+                    tree = etree.fromstring(html_source.encode('utf-8'), parser)
+                    elements = tree.xpath(relative_xpath)
+                    if elements and len(elements) > 0:
+                        element = elements[0]
+                        image_url_value = element.get('src') or element.get('data-src')
+                        if image_url_value:
+                            image_url_value = image_url_value.strip()
+                            logger.info(f"[이미지 URL 크롤링] ✅ 이미지 URL 크롤링 성공 (상대 XPath): {image_url_value[:100]}...")
+                except Exception as e:
+                    logger.warning(f"[이미지 URL 크롤링] 상대 XPath 사용 실패: {e}")
+            
+            # 방법 3: Full XPath로 이미지 찾기
+            if not image_url_value:
+                image_xpath = '/html/body/div[1]/div/div[4]/div[2]/div[2]/div/div[2]/div[1]/div[1]/div[2]/img'
+                logger.info(f"[이미지 URL 크롤링] Full XPath 시도: {image_xpath}")
+                
+                try:
+                    parser = etree.HTMLParser()
+                    tree = etree.fromstring(html_source.encode('utf-8'), parser)
+                    elements = tree.xpath(image_xpath)
+                    if elements and len(elements) > 0:
+                        element = elements[0]
+                        image_url_value = element.get('src') or element.get('data-src')
+                        if image_url_value:
+                            image_url_value = image_url_value.strip()
+                            logger.info(f"[이미지 URL 크롤링] ✅ 이미지 URL 크롤링 성공 (Full XPath): {image_url_value[:100]}...")
+                except Exception as e:
+                    logger.warning(f"[이미지 URL 크롤링] Full XPath 직접 사용 실패: {e}")
+            
+            # 방법 4: CSS 선택자로 이미지 찾기
+            if not image_url_value:
+                logger.info("[이미지 URL 크롤링] CSS 선택자로 이미지 찾기 시도...")
+                image_selectors = [
+                    '#content > div > div.Cpf2P_YsRS > div.OaKLUocIcJ > div.PYE1T66W79.JUPB3aUHbH > div.mdFeBiFowv.S0Yy3ca55r > img',  # 제공된 선택자
+                    '#content img[alt="대표이미지"]',  # alt 속성과 함께
+                    '#content img',
+                    '#INTRODUCE img',
+                    'img[alt="대표이미지"]',  # alt 속성만으로
+                    'div.product_image img',
+                    'img.product_image',
+                    '.product_image img',
+                    'img[class*="product"]',
+                    'div[class*="product"] img',
+                ]
+                
+                for selector in image_selectors:
+                    try:
+                        element = soup.select_one(selector)
+                        if element:
+                            image_url_value = element.get('src') or element.get('data-src')
+                            if image_url_value:
+                                image_url_value = image_url_value.strip()
+                                logger.info(f"[이미지 URL 크롤링] ✅ 이미지 URL 크롤링 성공 (CSS 선택자: {selector}): {image_url_value[:100]}...")
+                                break
+                    except Exception as e:
+                        logger.debug(f"[이미지 URL 크롤링] CSS 선택자 '{selector}' 실패: {e}")
+                        continue
+            
+            # 방법 5: JavaScript로 동적 로딩된 이미지 확인
+            if not image_url_value:
+                logger.info("[이미지 URL 크롤링] JavaScript로 동적 이미지 확인...")
+                try:
+                    image_url_js = driver.execute_script("""
+                        try {
+                            // alt="대표이미지" 속성으로 찾기 (우선)
+                            var img = document.querySelector('img[alt="대표이미지"]');
+                            if (img) {
+                                return img.src || img.getAttribute('data-src') || null;
+                            }
+                            
+                            // 상대 XPath 시도
+                            var xpath = '//*[@id="content"]/div/div[2]/div[1]/div[1]/div[2]/img';
+                            var element = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                            if (element) {
+                                return element.src || element.getAttribute('data-src') || null;
+                            }
+                            
+                            // Full XPath 시도
+                            xpath = '/html/body/div[1]/div/div[4]/div[2]/div[2]/div/div[2]/div[1]/div[1]/div[2]/img';
+                            element = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                            if (element) {
+                                return element.src || element.getAttribute('data-src') || null;
+                            }
+                            
+                            // CSS 선택자 시도
+                            img = document.querySelector('#content > div > div.Cpf2P_YsRS > div.OaKLUocIcJ > div.PYE1T66W79.JUPB3aUHbH > div.mdFeBiFowv.S0Yy3ca55r > img');
+                            if (img) {
+                                return img.src || img.getAttribute('data-src') || null;
+                            }
+                            
+                            // #content 내 이미지 찾기
+                            img = document.querySelector('#content img');
+                            if (img) {
+                                return img.src || img.getAttribute('data-src') || null;
+                            }
+                            
+                            // #INTRODUCE 내 이미지 찾기
+                            img = document.querySelector('#INTRODUCE img');
+                            if (img) {
+                                return img.src || img.getAttribute('data-src') || null;
+                            }
+                            
+                            return null;
+                        } catch (e) {
+                            return null;
+                        }
+                    """)
+                    if image_url_js:
+                        image_url_value = image_url_js.strip()
+                        logger.info(f"[이미지 URL 크롤링] ✅ 이미지 URL 크롤링 성공 (JavaScript): {image_url_value[:100]}...")
+                except Exception as e:
+                    logger.debug(f"[이미지 URL 크롤링] JavaScript 이미지 확인 실패: {e}")
+            
+            # ========== 태그 크롤링 ==========
             # 방법 1: lxml etree를 사용한 XPath 직접 사용
             tag_xpath = '/html/body/div[1]/div/div[4]/div[2]/div[2]/div/div[3]/div[6]/div/div[11]/div/ul/li[1]/a'
             logger.info(f"[태그 크롤링] 태그 XPath 시도: {tag_xpath}")
@@ -813,8 +986,102 @@ def crawl_image_tag(search_url: str, nvmid: str, reward_id: int, headless: bool 
         except Exception as e:
             logger.error(f"[태그 크롤링] 태그 크롤링 실패: {e}", exc_info=True)
         
-        # 6단계: DB 업데이트
-        if tag_value:
+        # 태그를 찾지 못한 경우 상세 분석
+        if not tag_value:
+            logger.warning(f"\n{'='*60}")
+            logger.warning(f"[태그 크롤링 실패 분석] reward_id={reward_id}")
+            logger.warning(f"{'='*60}")
+            logger.warning(f"현재 페이지 URL: {driver.current_url if driver else 'N/A'}")
+            
+            try:
+                if driver:
+                    html_source = driver.page_source
+                    logger.warning(f"HTML 소스 길이: {len(html_source)} bytes")
+                    
+                    # BeautifulSoup으로 페이지 구조 분석
+                    soup = BeautifulSoup(html_source, 'html.parser')
+                    
+                    # #INTRODUCE 요소 확인
+                    introduce = soup.find(id='INTRODUCE')
+                    if introduce:
+                        logger.warning("✅ #INTRODUCE 요소 발견")
+                        
+                        # ul 태그 개수 확인
+                        uls = introduce.find_all('ul')
+                        logger.warning(f"  - ul 태그 개수: {len(uls)}")
+                        
+                        # li 태그 개수 확인
+                        lis = introduce.find_all('li')
+                        logger.warning(f"  - li 태그 개수: {len(lis)}")
+                        
+                        # a 태그 개수 확인
+                        links = introduce.find_all('a')
+                        logger.warning(f"  - a 태그 개수: {len(links)}")
+                        
+                        # data-shp-inventory="tag" 속성을 가진 링크 확인
+                        tag_links = introduce.find_all('a', attrs={'data-shp-inventory': 'tag'})
+                        logger.warning(f"  - data-shp-inventory='tag' 링크 개수: {len(tag_links)}")
+                        
+                        if tag_links:
+                            logger.warning("  - 발견된 태그 링크 텍스트:")
+                            for idx, link in enumerate(tag_links[:5], 1):  # 최대 5개만 출력
+                                text = link.get_text(strip=True)
+                                href = link.get('href', '')
+                                logger.warning(f"    [{idx}] 텍스트: '{text}', href: {href[:100]}")
+                        
+                        # 첫 번째 ul의 구조 확인
+                        if uls:
+                            first_ul = uls[0]
+                            first_ul_lis = first_ul.find_all('li')
+                            logger.warning(f"  - 첫 번째 ul의 li 개수: {len(first_ul_lis)}")
+                            if first_ul_lis:
+                                first_li = first_ul_lis[0]
+                                first_li_links = first_li.find_all('a')
+                                logger.warning(f"  - 첫 번째 li의 a 태그 개수: {len(first_li_links)}")
+                                if first_li_links:
+                                    first_link_text = first_li_links[0].get_text(strip=True)
+                                    first_link_href = first_li_links[0].get('href', '')
+                                    logger.warning(f"  - 첫 번째 링크 텍스트: '{first_link_text}'")
+                                    logger.warning(f"  - 첫 번째 링크 href: {first_link_href[:100]}")
+                    else:
+                        logger.warning("❌ #INTRODUCE 요소를 찾을 수 없음")
+                    
+                    # 보안문자 감지
+                    if 'captcha' in html_source.lower() or '보안문자' in html_source or '자동입력 방지' in html_source:
+                        logger.warning("⚠️ 보안문자 감지됨!")
+                    
+                    # 페이지 제목 확인
+                    title = soup.find('title')
+                    if title:
+                        logger.warning(f"페이지 제목: {title.get_text(strip=True)}")
+                    
+                    # body 내 div 개수 확인
+                    body = soup.find('body')
+                    if body:
+                        divs = body.find_all('div')
+                        logger.warning(f"body 내 div 태그 개수: {len(divs)}")
+                        
+                        # class에 'tag'가 포함된 요소 확인
+                        tag_elements = soup.find_all(class_=lambda x: x and 'tag' in x.lower())
+                        logger.warning(f"class에 'tag'가 포함된 요소 개수: {len(tag_elements)}")
+                        
+                        # href에 'tag' 또는 'keyword'가 포함된 링크 확인
+                        tag_href_links = soup.find_all('a', href=lambda x: x and ('tag' in x.lower() or 'keyword' in x.lower()))
+                        logger.warning(f"href에 'tag'/'keyword'가 포함된 링크 개수: {len(tag_href_links)}")
+                        if tag_href_links:
+                            logger.warning("  - 발견된 링크:")
+                            for idx, link in enumerate(tag_href_links[:5], 1):
+                                text = link.get_text(strip=True)
+                                href = link.get('href', '')
+                                logger.warning(f"    [{idx}] 텍스트: '{text}', href: {href[:100]}")
+                    
+            except Exception as e:
+                logger.error(f"[태그 크롤링 실패 분석] 분석 중 오류: {e}", exc_info=True)
+            
+            logger.warning(f"{'='*60}\n")
+        
+        # 6단계: DB 업데이트 (태그 및 이미지 URL 모두)
+        if tag_value or image_url_value:
             db = SessionLocal()
             try:
                 existing = db.query(RewardRank).filter(
@@ -822,28 +1089,41 @@ def crawl_image_tag(search_url: str, nvmid: str, reward_id: int, headless: bool 
                 ).first()
                 
                 if existing:
-                    old_tag = existing.image_tag
-                    existing.image_tag = tag_value
-                    existing.updated_at = datetime.now()
-                    db.commit()
-                    logger.info(f"[DB] ✅ reward_id={reward_id} 태그 업데이트 완료")
-                    logger.info(f"[DB]    이전 태그: {old_tag}")
-                    logger.info(f"[DB]    새 태그: {tag_value}")
+                    updated = False
+                    if tag_value:
+                        old_tag = existing.image_tag
+                        existing.image_tag = tag_value
+                        updated = True
+                        logger.info(f"[DB] ✅ reward_id={reward_id} 태그 업데이트 완료")
+                        logger.info(f"[DB]    이전 태그: {old_tag}")
+                        logger.info(f"[DB]    새 태그: {tag_value}")
+                    
+                    if image_url_value:
+                        old_image_url = existing.image_url
+                        existing.image_url = image_url_value
+                        updated = True
+                        logger.info(f"[DB] ✅ reward_id={reward_id} 이미지 URL 업데이트 완료")
+                        logger.info(f"[DB]    이전 이미지 URL: {old_image_url}")
+                        logger.info(f"[DB]    새 이미지 URL: {image_url_value[:100]}...")
+                    
+                    if updated:
+                        existing.updated_at = datetime.now()
+                        db.commit()
                 else:
                     logger.warning(f"[DB] ⚠️ reward_id={reward_id} 레코드를 찾을 수 없습니다.")
             except Exception as e:
                 db.rollback()
-                logger.error(f"[DB] ❌ reward_id={reward_id} 태그 업데이트 실패: {e}", exc_info=True)
+                logger.error(f"[DB] ❌ reward_id={reward_id} 업데이트 실패: {e}", exc_info=True)
             finally:
                 db.close()
         else:
-            logger.warning(f"[태그 크롤링] ⚠️ reward_id={reward_id}: 태그를 크롤링하지 못했습니다.")
+            logger.warning(f"[태그 크롤링] ⚠️ reward_id={reward_id}: 태그 및 이미지 URL을 크롤링하지 못했습니다.")
         
-        return tag_value
+        return (tag_value, image_url_value)
         
     except Exception as e:
         logger.error(f"[태그 크롤링] reward_id={reward_id} 크롤링 오류: {e}", exc_info=True)
-        return None
+        return (None, None)
     finally:
         if driver:
             driver.quit()
@@ -909,19 +1189,22 @@ def crawl_tags_for_all_rewards(headless: bool = True, delay: int = 5) -> int:
                 continue
             
             try:
-                # 태그 크롤링 수행
-                tag_value = crawl_image_tag(
+                # 태그 및 이미지 URL 크롤링 수행
+                tag_value, image_url_value = crawl_image_tag(
                     search_url=search_url,
                     nvmid=nvmid,
                     reward_id=reward_id,
                     headless=headless
                 )
                 
-                if tag_value:
+                if tag_value or image_url_value:
                     crawled_count += 1
-                    logger.info(f"[태그 크롤링 스케줄러] ✅ reward_id={reward_id} 태그 크롤링 완료: {tag_value}")
+                    if tag_value:
+                        logger.info(f"[태그 크롤링 스케줄러] ✅ reward_id={reward_id} 태그 크롤링 완료: {tag_value}")
+                    if image_url_value:
+                        logger.info(f"[태그 크롤링 스케줄러] ✅ reward_id={reward_id} 이미지 URL 크롤링 완료: {image_url_value[:100]}...")
                 else:
-                    logger.warning(f"[태그 크롤링 스케줄러] ⚠️ reward_id={reward_id}: 태그를 크롤링하지 못했습니다.")
+                    logger.warning(f"[태그 크롤링 스케줄러] ⚠️ reward_id={reward_id}: 태그 및 이미지 URL을 크롤링하지 못했습니다.")
                 
             except Exception as e:
                 logger.error(f"[태그 크롤링 스케줄러] reward_id={reward_id} 크롤링 오류: {e}", exc_info=True)
@@ -941,6 +1224,73 @@ def crawl_tags_for_all_rewards(headless: bool = True, delay: int = 5) -> int:
         db.close()
     
     return crawled_count
+
+
+def crawl_tag_for_single_reward(reward_id: int, headless: bool = True) -> Tuple[Optional[str], Optional[str]]:
+    """
+    특정 reward_id의 태그 및 이미지 URL 크롤링 수행
+    
+    Args:
+        reward_id: 크롤링할 reward_rank의 reward_id
+        headless: Headless 모드
+    
+    Returns:
+        tuple: (태그 텍스트, 이미지 URL) 또는 (None, None)
+    """
+    db = SessionLocal()
+    
+    try:
+        # reward_rank 테이블에서 특정 reward_id 조회
+        record = db.query(RewardRank).filter(
+            RewardRank.reward_id == reward_id
+        ).first()
+        
+        if not record:
+            logger.error(f"[태그 크롤링] reward_id={reward_id} 레코드를 찾을 수 없습니다.")
+            return (None, None)
+        
+        nvmid = record.nvmid
+        search_url = record.search_url
+        
+        logger.info(f"\n{'='*60}")
+        logger.info(f"[태그 크롤링] reward_id={reward_id} 크롤링 시작")
+        logger.info(f"  nvmid: {nvmid}")
+        logger.info(f"  search_url: {search_url}")
+        logger.info(f"{'='*60}\n")
+        
+        # 데이터 검증
+        if not nvmid or not nvmid.strip():
+            logger.warning(f"[태그 크롤링] ⚠ reward_id={reward_id}: nvmid가 없어 크롤링할 수 없습니다.")
+            return (None, None)
+        
+        if not search_url or not search_url.strip():
+            logger.warning(f"[태그 크롤링] ⚠ reward_id={reward_id}: search_url이 없어 크롤링할 수 없습니다.")
+            return (None, None)
+        
+        # 태그 및 이미지 URL 크롤링 수행
+        tag_value, image_url_value = crawl_image_tag(
+            search_url=search_url,
+            nvmid=nvmid,
+            reward_id=reward_id,
+            headless=headless
+        )
+        
+        if tag_value or image_url_value:
+            logger.info(f"[태그 크롤링] ✅ reward_id={reward_id} 크롤링 완료")
+            if tag_value:
+                logger.info(f"  - 태그: {tag_value}")
+            if image_url_value:
+                logger.info(f"  - 이미지 URL: {image_url_value[:100]}...")
+        else:
+            logger.warning(f"[태그 크롤링] ⚠️ reward_id={reward_id}: 태그 및 이미지 URL을 크롤링하지 못했습니다.")
+        
+        return (tag_value, image_url_value)
+        
+    except Exception as e:
+        logger.error(f"[태그 크롤링] reward_id={reward_id} 크롤링 오류: {e}", exc_info=True)
+        return (None, None)
+    finally:
+        db.close()
 
 
 # Admin 권한 체크 함수

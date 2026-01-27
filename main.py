@@ -2,18 +2,22 @@
 FastAPI 메인 서버
 포트 8001에서 실행
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy.orm import Session
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import atexit
 import logging
+import random
 
 # API 라우터 임포트
 from api.routers import auth, accounts, advertisements, settlements, notices, rewards, rewards_link
 from api.routers import keyword_search_api, keyword_search_api2
+from database import get_db
+from models import RewardLink
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -74,6 +78,56 @@ async def root():
 async def health_check():
     """헬스 체크 엔드포인트"""
     return {"status": "healthy"}
+
+
+@app.get("/redirect/{short_code}")
+async def public_redirect(
+    short_code: str,
+    db: Session = Depends(get_db)
+):
+    """
+    공개 리다이렉션 엔드포인트 (인증 불필요)
+    프론트엔드에서 /redirect/{short_code}로 접속 시 네이버로 리다이렉트
+    예: http://localhost:3000/redirect/CTTPA2YI1x
+    """
+    try:
+        # short_code로 모든 RewardLink 레코드 조회 (같은 short_code를 가진 여러 레코드)
+        links = db.query(RewardLink).filter(
+            RewardLink.short_code == short_code
+        ).all()
+        
+        if not links:
+            raise HTTPException(
+                status_code=404,
+                detail=f"링크를 찾을 수 없습니다: {short_code}"
+            )
+        
+        # reward_link가 있는 레코드만 필터링
+        valid_links = [link for link in links if link.reward_link and link.reward_link.strip()]
+        
+        if not valid_links:
+            raise HTTPException(
+                status_code=404,
+                detail="등록된 네이버 URL이 없습니다."
+            )
+        
+        # 랜덤으로 하나의 레코드 선택
+        random_link = random.choice(valid_links)
+        naver_url = random_link.reward_link.strip()
+        
+        logger.info(f"[공개 리다이렉트] short_code={short_code}, 선택된 link_id={random_link.link_id}, 네이버 URL: {naver_url[:100]}...")
+        
+        # 리다이렉트
+        return RedirectResponse(url=naver_url, status_code=302)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"공개 리다이렉트 중 오류: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"리다이렉트 중 오류가 발생했습니다: {str(e)}"
+        )
 
 
 # 스케줄러 설정

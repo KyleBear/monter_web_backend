@@ -1518,35 +1518,6 @@ async def update_advertisement(
             detail="종료된 광고는 수정할 수 없습니다."
         )
     
-    # 상태 변경
-    if advertisement.status:
-        valid_statuses = ["normal", "error", "pending", "ending", "ended"]
-        if advertisement.status not in valid_statuses:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"유효하지 않은 상태입니다. 가능한 상태: {', '.join(valid_statuses)}"
-            )
-        ad.status = advertisement.status
-    else:
-        # 상태가 제공되지 않았을 때 날짜 기반으로 자동 계산
-        today = date.today()
-        
-        # start_date와 end_date가 있는 경우에만 자동 상태 계산
-        if ad.start_date and ad.end_date:
-            if today < ad.start_date:
-                # start_date가 오늘보다 이전이면 → pending (대기중)
-                ad.status = "pending"
-            elif today > ad.end_date:
-                # 오늘 날짜가 end_date 이후이면 → ended
-                ad.status = "ended"
-            elif today == ad.end_date - timedelta(days=1):
-                # 오늘 날짜가 end_date 1일전이면 → ending
-                ad.status = "ending"
-            elif ad.start_date <= today <= ad.end_date:
-                # 오늘이 start_date와 end_date 사이면 → normal
-                ad.status = "normal"
-            # else는 기존 상태 유지 (error 상태 등은 유지)
-    
     # 메인 키워드 변경
     if advertisement.main_keyword:
         ad.main_keyword = advertisement.main_keyword

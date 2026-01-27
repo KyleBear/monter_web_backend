@@ -661,8 +661,7 @@ def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Opt
         db = db_session
     
     # 모델 import (순환 import 방지를 위해 함수 내부에서 import)
-    import sys
-    import os
+    # os와 sys는 파일 상단에서 이미 import되어 있으므로 중복 import 제거
     current_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(os.path.dirname(current_dir))
     if project_root not in sys.path:
