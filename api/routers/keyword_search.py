@@ -76,7 +76,7 @@ class ClientIDRotator:
             
             # 실패한 계정 제외하고 사용 가능한 계정만 필터링
             available_accounts = [acc for i, acc in enumerate(self.accounts) 
-                                    if i not in self.failed_accounts]
+                                 if i not in self.failed_accounts]
             
             if not available_accounts:
                 # 모든 계정이 실패한 경우, 실패 목록 초기화 후 재시도
@@ -227,10 +227,10 @@ def get_shopping_rank_with_ad_flag(
                 "X-Naver-Client-Secret": client_secret,
             }
             
-        # API 요청
+            # API 요청
             response = requests.get(API_URL, headers=headers, params=params, timeout=10)
-                
-                # 401 Unauthorized 오류 시 다른 계정으로 재시도
+            
+            # 401 Unauthorized 오류 시 다른 계정으로 재시도
             if response.status_code == 401:
                 logger.warning(f"401 Unauthorized - 계정 {client_id} 인증 실패, 다른 계정으로 재시도...")
                 client_rotator.mark_failed(client_id)
@@ -239,7 +239,7 @@ def get_shopping_rank_with_ad_flag(
                     continue
                 else:
                     response.raise_for_status()
-        
+            
             # 429 Too Many Requests 오류 시 다른 계정으로 재시도
             if response.status_code == 429:
                 logger.warning(f"429 Too Many Requests - 계정 {client_id} 제한 초과, 다른 계정으로 재시도...")
@@ -893,8 +893,8 @@ class BrowserPool:
     def __init__(self, pool_size: int, headless: bool = True):
         """
         Args:
-            pool_size: 풀에 생성할 브라우저 개수
-            headless: headless 모드 여부
+                pool_size: 풀에 생성할 브라우저 개수
+                headless: headless 모드 여부
         """
         self.pool_size = pool_size
         self.headless = headless
@@ -916,8 +916,8 @@ class BrowserPool:
         options.add_experimental_option('useAutomationExtension', False)
         
         driver = webdriver.Chrome(options=options)
-        
-        # 모바일 모드 설정
+            
+            # 모바일 모드 설정
         try:
             mobile_user_agent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36"
             driver.execute_cdp_cmd('Network.setUserAgentOverride', {
@@ -1109,27 +1109,27 @@ def check_exposure_and_cpc_for_keywords(
     
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # 모든 키워드에 대해 작업 제출
+        # 모든 키워드에 대해 작업 제출
             future_to_keyword = {
-                executor.submit(check_single_keyword, keyword): keyword 
-                for keyword in keywords
-            }
-            
-            # 완료된 작업부터 결과 수집
-            for future in as_completed(future_to_keyword):
-                keyword = future_to_keyword[future]
-                try:
-                    result = future.result()
-                    results.append(result)
-                    logger.info(f"✓ 키워드 '{keyword}': 통검 노출={result['is_shopping_exposed']}, CPC={result['cpc']}")
-                except Exception as e:
-                    logger.error(f"키워드 '{keyword}' 처리 중 예외: {e}")
-                    results.append({
-                        "keyword": keyword,
-                        "is_shopping_exposed": False,
-                        "cpc": False,
-                        "error": str(e)
-                    })
+            executor.submit(check_single_keyword, keyword): keyword 
+            for keyword in keywords
+        }
+        
+        # 완료된 작업부터 결과 수집
+        for future in as_completed(future_to_keyword):
+            keyword = future_to_keyword[future]
+            try:
+                result = future.result()
+                results.append(result)
+                logger.info(f"✓ 키워드 '{keyword}': 통검 노출={result['is_shopping_exposed']}, CPC={result['cpc']}")
+            except Exception as e:
+                logger.error(f"키워드 '{keyword}' 처리 중 예외: {e}")
+                results.append({
+                    "keyword": keyword,
+                    "is_shopping_exposed": False,
+                    "cpc": False,
+                    "error": str(e)
+                })
     finally:
         # 브라우저 풀 종료
         browser_pool.close_all()

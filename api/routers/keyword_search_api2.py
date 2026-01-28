@@ -7,7 +7,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 from database import get_db, SessionLocal
 from models import RewardRank, RewardTarget, UsersAdmin, ProxyIP
 from utils.auth_helpers import get_current_user
@@ -1291,6 +1291,127 @@ def crawl_tag_for_single_reward(reward_id: int, headless: bool = True) -> Tuple[
         return (None, None)
     finally:
         db.close()
+
+
+def crawl_tags_for_range_rewards(start_id: int, end_id: int, headless: bool = True, delay: int = 5) -> Dict[str, int]:
+    """
+    reward_rank 테이블의 특정 구간(reward_id 범위)에 대해 태그 및 이미지 URL 크롤링 수행
+    
+    Args:
+        start_id: 시작 reward_id (포함)
+        end_id: 종료 reward_id (포함)
+        headless: Headless 모드
+        delay: 크롤링 간 대기 시간 (초)
+    
+    Returns:
+        dict: {
+            'total': 전체 레코드 수,
+            'crawled': 크롤링 성공한 레코드 수,
+            'failed': 크롤링 실패한 레코드 수,
+            'skipped': 건너뛴 레코드 수 (nvmid 또는 search_url 없음)
+        }
+    """
+    db = SessionLocal()
+    crawled_count = 0
+    failed_count = 0
+    skipped_count = 0
+    total_count = 0
+    
+    try:
+        # reward_rank 테이블에서 구간 내의 레코드 조회
+        # nvmid와 search_url이 있는 레코드만 조회
+        records = db.query(RewardRank).filter(
+            RewardRank.reward_id >= start_id,
+            RewardRank.reward_id <= end_id,
+            RewardRank.nvmid.isnot(None),
+            RewardRank.nvmid != '',
+            RewardRank.search_url.isnot(None),
+            RewardRank.search_url != ''
+        ).order_by(RewardRank.reward_id).all()
+        
+        total_count = len(records)
+        logger.info(f"[구간 태그 크롤링] reward_id {start_id}~{end_id} 구간 크롤링 대상: {total_count}개")
+        
+        if not records:
+            logger.info(f"[구간 태그 크롤링] reward_id {start_id}~{end_id} 구간에 크롤링할 레코드가 없습니다.")
+            return {
+                'total': 0,
+                'crawled': 0,
+                'failed': 0,
+                'skipped': 0
+            }
+        
+        for idx, record in enumerate(records, 1):
+            reward_id = record.reward_id
+            nvmid = record.nvmid
+            search_url = record.search_url
+            
+            logger.info(f"\n{'='*60}")
+            logger.info(f"[구간 태그 크롤링] {idx}/{total_count} - reward_id={reward_id} (구간: {start_id}~{end_id})")
+            logger.info(f"  nvmid: {nvmid}")
+            logger.info(f"  search_url: {search_url}")
+            logger.info(f"{'='*60}\n")
+            
+            # 데이터 검증
+            if not nvmid or not nvmid.strip():
+                logger.warning(f"[구간 태그 크롤링] ⚠ reward_id={reward_id}: nvmid가 없어 건너뜁니다.")
+                skipped_count += 1
+                continue
+            
+            if not search_url or not search_url.strip():
+                logger.warning(f"[구간 태그 크롤링] ⚠ reward_id={reward_id}: search_url이 없어 건너뜁니다.")
+                skipped_count += 1
+                continue
+            
+            try:
+                # 태그 및 이미지 URL 크롤링 수행
+                tag_value, image_url_value = crawl_image_tag(
+                    search_url=search_url,
+                    nvmid=nvmid,
+                    reward_id=reward_id,
+                    headless=headless
+                )
+                
+                if tag_value or image_url_value:
+                    crawled_count += 1
+                    if tag_value:
+                        logger.info(f"[구간 태그 크롤링] ✅ reward_id={reward_id} 태그 크롤링 완료: {tag_value}")
+                    if image_url_value:
+                        logger.info(f"[구간 태그 크롤링] ✅ reward_id={reward_id} 이미지 URL 크롤링 완료: {image_url_value[:100]}...")
+                else:
+                    logger.warning(f"[구간 태그 크롤링] ⚠️ reward_id={reward_id}: 태그 및 이미지 URL을 크롤링하지 못했습니다.")
+                    failed_count += 1
+                
+            except Exception as e:
+                logger.error(f"[구간 태그 크롤링] reward_id={reward_id} 크롤링 오류: {e}", exc_info=True)
+                failed_count += 1
+                continue
+            
+            # 마지막 항목이 아닐 때만 대기
+            if idx < total_count:
+                delay_time = random.uniform(delay, delay + 5)
+                logger.info(f"\n[대기] 다음 크롤링까지 {delay_time:.2f}초 대기...\n")
+                time.sleep(delay_time)
+        
+        logger.info(f"\n{'='*60}")
+        logger.info(f"[구간 태그 크롤링] 완료: reward_id {start_id}~{end_id} 구간")
+        logger.info(f"  전체: {total_count}개")
+        logger.info(f"  성공: {crawled_count}개")
+        logger.info(f"  실패: {failed_count}개")
+        logger.info(f"  건너뜀: {skipped_count}개")
+        logger.info(f"{'='*60}\n")
+        
+    except Exception as e:
+        logger.error(f"[구간 태그 크롤링] 오류: {e}", exc_info=True)
+    finally:
+        db.close()
+    
+    return {
+        'total': total_count,
+        'crawled': crawled_count,
+        'failed': failed_count,
+        'skipped': skipped_count
+    }
 
 
 # Admin 권한 체크 함수
