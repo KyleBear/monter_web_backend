@@ -8,7 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List, Tuple, Dict
-from database import get_db, SessionLocal
+try:
+    # 패키징된 exe에서는 database_package 사용
+    from database_package import get_db, SessionLocal
+except ImportError:
+    # 일반 개발 환경에서는 database 사용
+    from database import get_db, SessionLocal
 from models import RewardRank, RewardTarget, UsersAdmin, ProxyIP
 from utils.auth_helpers import get_current_user
 from datetime import datetime
@@ -26,10 +31,12 @@ from lxml import etree
 # Selenium imports
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from webdriver_manager.chrome import ChromeDriverManager
 
 # keyword_search.py의 함수들 import
 import sys
@@ -355,12 +362,31 @@ def _setup_chrome_driver(headless: bool = False, proxy_ip: str = None, proxy_por
         proxy_ip: 프록시 IP
         proxy_port: 프록시 포트
     """
-    user_data_dir = tempfile.mkdtemp(prefix='chrome_data_reward_')
+    # Windows에서 안전한 경로 생성
+    import platform
+    if platform.system() == 'Windows':
+        # Windows에서는 임시 디렉토리를 명시적으로 지정
+        base_temp_dir = os.path.join(os.environ.get('TEMP', os.environ.get('TMP', 'C:\\temp')), 'chrome_data')
+        os.makedirs(base_temp_dir, exist_ok=True)
+        user_data_dir = tempfile.mkdtemp(prefix='chrome_', dir=base_temp_dir)
+    else:
+        user_data_dir = tempfile.mkdtemp(prefix='chrome_data_reward_')
+    
+    # 경로 정규화 (Windows 경로 구분자 처리)
+    user_data_dir = os.path.abspath(os.path.normpath(user_data_dir))
     logger.info(f"[Chrome 설정] User Data Directory: {user_data_dir}")
+    
+    # 디렉토리가 실제로 존재하는지 확인
+    if not os.path.exists(user_data_dir):
+        try:
+            os.makedirs(user_data_dir, exist_ok=True)
+        except Exception as e:
+            logger.error(f"[Chrome 설정] User Data Directory 생성 실패: {e}")
+            raise
     
     options = Options()
     
-    # User Data Directory 사용
+    # User Data Directory 사용 (Windows 경로 처리)
     options.add_argument(f'--user-data-dir={user_data_dir}')
     
     # 강화된 봇 감지 회피 옵션
@@ -411,7 +437,21 @@ def _setup_chrome_driver(headless: bool = False, proxy_ip: str = None, proxy_por
     if headless:
         options.add_argument('--headless=new')
     
-    driver = webdriver.Chrome(options=options)
+    # ChromeDriver 자동 다운로드 및 설정
+    try:
+        logger.info("[Chrome 설정] ChromeDriver 확인 중...")
+        service = Service(ChromeDriverManager().install())
+        logger.info("[Chrome 설정] ChromeDriver 준비 완료")
+        driver = webdriver.Chrome(service=service, options=options)
+    except Exception as e:
+        logger.error(f"[Chrome 설정] ChromeDriver 설정 실패: {e}", exc_info=True)
+        logger.info("[Chrome 설정] ChromeDriver 없이 시도 중...")
+        # ChromeDriver 없이도 시도 (시스템 PATH에 있는 경우)
+        try:
+            driver = webdriver.Chrome(options=options)
+        except Exception as driver_error:
+            logger.error(f"[Chrome 설정] Chrome WebDriver 초기화 실패: {driver_error}", exc_info=True)
+            raise Exception(f"Chrome WebDriver를 초기화할 수 없습니다. ChromeDriver가 필요합니다. 오류: {str(driver_error)}")
     
     # ========== 쿠키 및 캐시 삭제 ==========
     try:
@@ -591,14 +631,14 @@ def click_by_nvmid(driver, nvmid):
         return False
 
 
-def crawl_image_tag(search_url: str, nvmid: str, reward_id: int, headless: bool = True) -> Tuple[Optional[str], Optional[str]]:
+def crawl_image_tag(nvmid: str, reward_id: int, search_url: Optional[str] = None, headless: bool = True) -> Tuple[Optional[str], Optional[str]]:
     """
-    search_url로 접속 후 nvmid로 상품 클릭하여 이미지 태그 및 이미지 URL 크롤링
+    search_url 또는 nvmid로 접속하여 이미지 태그 및 이미지 URL 크롤링
     
     Args:
-        search_url: 검색 URL
-        nvmid: 네이버 상품 ID
+        nvmid: 네이버 상품 ID (필수)
         reward_id: reward_rank의 reward_id (DB 업데이트용)
+        search_url: 검색 URL (옵셔널, 없으면 nvmid로 직접 접근)
         headless: Headless 모드
     
     Returns:
@@ -608,7 +648,7 @@ def crawl_image_tag(search_url: str, nvmid: str, reward_id: int, headless: bool 
     user_data_dir = None
     
     try:
-        logger.info(f"[태그 크롤링] 시작: reward_id={reward_id}, nvmid={nvmid}, search_url={search_url}")
+        logger.info(f"[태그 크롤링] 시작: reward_id={reward_id}, nvmid={nvmid}, search_url={search_url if search_url else '없음 (nvmid로 직접 접근)'}")
         
         # 랜덤 프록시 선택
         proxy_ip, proxy_port = get_random_proxy()
@@ -646,55 +686,94 @@ def crawl_image_tag(search_url: str, nvmid: str, reward_id: int, headless: bool 
         driver.execute_script("window.scrollTo(0, 0);")
         time.sleep(random.uniform(0.5, 1.0))
         
-        # 3단계: search_url로 접속
-        logger.info(f"[태그 크롤링] search_url로 접속: {search_url}")
-        driver.get(search_url)
-        
-        # 검색 결과 페이지 로딩 대기
-        time.sleep(random.uniform(5, 8))
-        
-        # 4단계: nvmid로 상품 클릭
-        logger.info(f"[태그 크롤링] nvmid로 상품 클릭: {nvmid}")
-        click_success = click_by_nvmid(driver, nvmid)
-        
-        if not click_success:
-            logger.error(f"\n{'='*60}")
-            logger.error(f"[태그 크롤링] ❌ reward_id={reward_id}: 상품 클릭 실패 (nvmid={nvmid})")
-            logger.error(f"{'='*60}")
-            logger.error(f"현재 페이지 URL: {driver.current_url if driver else 'N/A'}")
-            
+        # 3단계: search_url이 있으면 검색 결과 페이지로, 없으면 nvmid로 직접 상품 페이지 접근
+        if search_url and search_url.strip():
+            # 검색 결과 페이지를 거쳐서 접근
+            logger.info(f"[태그 크롤링] search_url로 접속: {search_url}")
             try:
-                if driver:
-                    html_source = driver.page_source
-                    logger.error(f"HTML 소스 길이: {len(html_source)} bytes")
+                driver.get(search_url)
+                # 검색 결과 페이지 로딩 대기
+                time.sleep(random.uniform(5, 8))
+                
+                # 4단계: nvmid로 상품 클릭
+                logger.info(f"[태그 크롤링] nvmid로 상품 클릭: {nvmid}")
+                click_success = click_by_nvmid(driver, nvmid)
+                
+                if not click_success:
+                    logger.error(f"\n{'='*60}")
+                    logger.error(f"[태그 크롤링] ❌ reward_id={reward_id}: 검색 결과에서 상품 클릭 실패 (nvmid={nvmid})")
+                    logger.error(f"[태그 크롤링] 현재 페이지 URL: {driver.current_url if driver else 'N/A'}")
+                    logger.error(f"[태그 크롤링] search_url: {search_url}")
                     
-                    # nvmid가 포함된 링크 확인
-                    soup = BeautifulSoup(html_source, 'html.parser')
-                    links_with_nvmid = soup.find_all('a', href=lambda x: x and nvmid in str(x))
-                    logger.error(f"nvmid({nvmid})가 포함된 링크 개수: {len(links_with_nvmid)}")
+                    try:
+                        if driver:
+                            html_source = driver.page_source
+                            logger.error(f"[태그 크롤링] HTML 소스 길이: {len(html_source)} bytes")
+                            
+                            # nvmid가 포함된 링크 확인
+                            soup = BeautifulSoup(html_source, 'html.parser')
+                            links_with_nvmid = soup.find_all('a', href=lambda x: x and nvmid in str(x))
+                            logger.error(f"[태그 크롤링] nvmid({nvmid})가 포함된 링크 개수: {len(links_with_nvmid)}")
+                            
+                            if links_with_nvmid:
+                                logger.error("[태그 크롤링] 발견된 nvmid 링크:")
+                                for idx, link in enumerate(links_with_nvmid[:5], 1):
+                                    href = link.get('href', '')
+                                    text = link.get_text(strip=True)
+                                    logger.error(f"[태그 크롤링]   [{idx}] href: {href[:150]}, 텍스트: '{text[:50]}'")
+                            else:
+                                logger.error("[태그 크롤링] ⚠️ nvmid가 포함된 링크를 찾을 수 없음")
+                            
+                            # data-nv-mid 속성 확인
+                            elements_with_nvmid = soup.find_all(attrs={'data-nv-mid': nvmid})
+                            logger.error(f"[태그 크롤링] data-nv-mid={nvmid} 속성을 가진 요소 개수: {len(elements_with_nvmid)}")
+                            
+                            # 보안문자 감지
+                            if 'captcha' in html_source.lower() or '보안문자' in html_source or '자동입력 방지' in html_source:
+                                logger.error("[태그 크롤링] ⚠️ 보안문자 감지됨!")
+                    except Exception as e:
+                        logger.error(f"[태그 크롤링] 클릭 실패 분석 중 오류: {e}", exc_info=True)
                     
-                    if links_with_nvmid:
-                        logger.error("발견된 nvmid 링크:")
-                        for idx, link in enumerate(links_with_nvmid[:5], 1):
-                            href = link.get('href', '')
-                            text = link.get_text(strip=True)
-                            logger.error(f"  [{idx}] href: {href[:150]}, 텍스트: '{text[:50]}'")
-                    else:
-                        logger.error("⚠️ nvmid가 포함된 링크를 찾을 수 없음")
-                    
-                    # data-nv-mid 속성 확인
-                    elements_with_nvmid = soup.find_all(attrs={'data-nv-mid': nvmid})
-                    logger.error(f"data-nv-mid={nvmid} 속성을 가진 요소 개수: {len(elements_with_nvmid)}")
-                    
-                    # 보안문자 감지
-                    if 'captcha' in html_source.lower() or '보안문자' in html_source or '자동입력 방지' in html_source:
-                        logger.error("⚠️ 보안문자 감지됨!")
-                    
+                    # 클릭 실패 시 nvmid로 직접 접근 시도
+                    logger.info(f"[태그 크롤링] 검색 결과에서 클릭 실패, nvmid로 직접 접근 시도: {nvmid}")
+                    try:
+                        direct_url = f"https://m.shopping.naver.com/catalog/{nvmid}"
+                        logger.info(f"[태그 크롤링] 직접 접근 URL: {direct_url}")
+                        driver.get(direct_url)
+                        time.sleep(random.uniform(3, 5))
+                        logger.info(f"[태그 크롤링] 직접 접근 성공: {direct_url}")
+                    except Exception as e:
+                        logger.error(f"[태그 크롤링] 직접 접근 실패: {e}", exc_info=True)
+                        logger.error(f"{'='*60}\n")
+                        return (None, None)
+                else:
+                    logger.info(f"[태그 크롤링] ✅ 검색 결과에서 상품 클릭 성공 (nvmid={nvmid})")
             except Exception as e:
-                logger.error(f"클릭 실패 분석 중 오류: {e}", exc_info=True)
-            
-            logger.error(f"{'='*60}\n")
-            return (None, None)
+                logger.error(f"[태그 크롤링] search_url 접속 실패: {e}", exc_info=True)
+                logger.info(f"[태그 크롤링] search_url 접속 실패로 인해 nvmid로 직접 접근 시도: {nvmid}")
+                try:
+                    direct_url = f"https://m.shopping.naver.com/catalog/{nvmid}"
+                    logger.info(f"[태그 크롤링] 직접 접근 URL: {direct_url}")
+                    driver.get(direct_url)
+                    time.sleep(random.uniform(3, 5))
+                    logger.info(f"[태그 크롤링] 직접 접근 성공: {direct_url}")
+                except Exception as direct_e:
+                    logger.error(f"[태그 크롤링] 직접 접근 실패: {direct_e}", exc_info=True)
+                    return (None, None)
+        else:
+            # search_url이 없으면 nvmid로 직접 상품 페이지 접근
+            logger.info(f"[태그 크롤링] search_url 없음, nvmid로 직접 상품 페이지 접근: {nvmid}")
+            try:
+                # 네이버 쇼핑 모바일 상품 페이지 URL
+                direct_url = f"https://m.shopping.naver.com/catalog/{nvmid}"
+                logger.info(f"[태그 크롤링] 직접 접근 URL: {direct_url}")
+                driver.get(direct_url)
+                time.sleep(random.uniform(3, 5))
+                logger.info(f"[태그 크롤링] 직접 접근 성공: {direct_url}")
+            except Exception as e:
+                logger.error(f"[태그 크롤링] 직접 접근 실패: {e}", exc_info=True)
+                logger.error(f"[태그 크롤링] nvmid: {nvmid}, reward_id: {reward_id}")
+                return (None, None)
         
         # 상품 페이지 로딩 대기
         time.sleep(random.uniform(3, 5))
@@ -1122,7 +1201,22 @@ def crawl_image_tag(search_url: str, nvmid: str, reward_id: int, headless: bool 
         return (tag_value, image_url_value)
         
     except Exception as e:
-        logger.error(f"[태그 크롤링] reward_id={reward_id} 크롤링 오류: {e}", exc_info=True)
+        error_msg = str(e)
+        error_type = type(e).__name__
+        import traceback
+        error_traceback = traceback.format_exc()
+        
+        logger.error(f"\n{'='*60}")
+        logger.error(f"[태그 크롤링] ❌ reward_id={reward_id} 크롤링 중 예외 발생")
+        logger.error(f"{'='*60}")
+        logger.error(f"예외 타입: {error_type}")
+        logger.error(f"예외 메시지: {error_msg}")
+        logger.error(f"nvmid: {nvmid}")
+        logger.error(f"search_url: {search_url if search_url else '없음 (nvmid로 직접 접근)'}")
+        logger.error(f"headless: {headless}")
+        logger.error(f"스택 트레이스:\n{error_traceback}")
+        logger.error(f"{'='*60}\n")
+        
         return (None, None)
     finally:
         if driver:
@@ -1184,16 +1278,17 @@ def crawl_tags_for_all_rewards(headless: bool = True, delay: int = 5) -> int:
                 logger.warning(f"[태그 크롤링 스케줄러] ⚠ reward_id={reward_id}: nvmid가 없어 건너뜁니다.")
                 continue
             
-            if not search_url or not search_url.strip():
-                logger.warning(f"[태그 크롤링 스케줄러] ⚠ reward_id={reward_id}: search_url이 없어 건너뜁니다.")
-                continue
+            # search_url이 없어도 nvmid만으로 크롤링 가능
+            final_search_url = search_url if (search_url and search_url.strip()) else None
+            if not final_search_url:
+                logger.info(f"[태그 크롤링 스케줄러] reward_id={reward_id}: search_url 없음, nvmid로 직접 접근 시도")
             
             try:
                 # 태그 및 이미지 URL 크롤링 수행
                 tag_value, image_url_value = crawl_image_tag(
-                    search_url=search_url,
                     nvmid=nvmid,
                     reward_id=reward_id,
+                    search_url=final_search_url,
                     headless=headless
                 )
                 
@@ -1263,15 +1358,16 @@ def crawl_tag_for_single_reward(reward_id: int, headless: bool = True) -> Tuple[
             logger.warning(f"[태그 크롤링] ⚠ reward_id={reward_id}: nvmid가 없어 크롤링할 수 없습니다.")
             return (None, None)
         
-        if not search_url or not search_url.strip():
-            logger.warning(f"[태그 크롤링] ⚠ reward_id={reward_id}: search_url이 없어 크롤링할 수 없습니다.")
-            return (None, None)
+        # search_url이 없어도 nvmid만으로 크롤링 가능
+        final_search_url = search_url if (search_url and search_url.strip()) else None
+        if not final_search_url:
+            logger.info(f"[태그 크롤링] reward_id={reward_id}: search_url 없음, nvmid로 직접 접근 시도")
         
         # 태그 및 이미지 URL 크롤링 수행
         tag_value, image_url_value = crawl_image_tag(
-            search_url=search_url,
             nvmid=nvmid,
             reward_id=reward_id,
+            search_url=final_search_url,
             headless=headless
         )
         
@@ -1291,6 +1387,156 @@ def crawl_tag_for_single_reward(reward_id: int, headless: bool = True) -> Tuple[
         return (None, None)
     finally:
         db.close()
+
+
+def crawl_tags_for_range_rewards_parallel(start_id: int, end_id: int, headless: bool = True, max_workers: int = 5) -> Dict[str, int]:
+    """
+    reward_rank 테이블의 특정 구간(reward_id 범위)에 대해 태그 및 이미지 URL 크롤링 수행 (병렬 처리)
+    
+    Args:
+        start_id: 시작 reward_id (포함)
+        end_id: 종료 reward_id (포함)
+        headless: Headless 모드 (기본값: True)
+        max_workers: 병렬 실행할 최대 브라우저 수 (기본값: 5)
+    
+    Returns:
+        dict: {
+            'total': 전체 레코드 수,
+            'crawled': 크롤링 성공한 레코드 수,
+            'failed': 크롤링 실패한 레코드 수,
+            'skipped': 건너뛴 레코드 수 (nvmid 또는 search_url 없음)
+        }
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    db = SessionLocal()
+    crawled_count = 0
+    failed_count = 0
+    skipped_count = 0
+    total_count = 0
+    
+    try:
+        # reward_rank 테이블에서 구간 내의 레코드 조회
+        # search_url 필터 제거 (nvmid만 필터링)
+        records = db.query(RewardRank).filter(
+            RewardRank.reward_id >= start_id,
+            RewardRank.reward_id <= end_id,
+            RewardRank.nvmid.isnot(None),
+            RewardRank.nvmid != ''
+        ).order_by(RewardRank.reward_id).all()
+        
+        total_count = len(records)
+        logger.info(f"[구간 태그 크롤링 병렬] reward_id {start_id}~{end_id} 구간 크롤링 대상: {total_count}개 (병렬 작업자: {max_workers}개)")
+        
+        if not records:
+            logger.info(f"[구간 태그 크롤링 병렬] reward_id {start_id}~{end_id} 구간에 크롤링할 레코드가 없습니다.")
+            return {
+                'total': 0,
+                'crawled': 0,
+                'failed': 0,
+                'skipped': 0
+            }
+        
+        # 병렬 처리 함수
+        def crawl_single_record(record):
+            reward_id = record.reward_id
+            nvmid = record.nvmid
+            search_url = record.search_url
+            
+            # 데이터 검증
+            if not nvmid or not nvmid.strip():
+                return {'status': 'skipped', 'reward_id': reward_id, 'reason': 'nvmid 없음 (reward_rank 테이블에 nvmid가 없거나 빈 문자열)'}
+            
+            # search_url이 없으면 키워드로부터 생성 시도
+            final_search_url = search_url if (search_url and search_url.strip()) else None
+            
+            if not final_search_url:
+                logger.info(f"[구간 태그 크롤링 병렬] reward_id={reward_id}: search_url 없음, 키워드로부터 생성 시도")
+                try:
+                    # 각 스레드에서 독립적인 DB 세션 생성 (병렬 처리 안전)
+                    thread_db = SessionLocal()
+                    try:
+                        # from models import RewardTarget
+                        # reward_target = thread_db.query(RewardTarget).filter(
+                        #     RewardTarget.reward_target_id == reward_id
+                        # ).first()
+                        
+                        # if reward_target and reward_target.keyword:
+                        #     # 키워드로부터 search_url 생성
+                            final_search_url = generate_search_url(record.keyword)
+                            logger.info(f"[구간 태그 크롤링 병렬] reward_id={reward_id}: search_url 생성 성공 (키워드: {reward_link.keyword})")
+                    finally:
+                        thread_db.close()
+                except Exception as e:
+                    logger.warning(f"[구간 태그 크롤링 병렬] reward_id={reward_id} search_url 생성 실패: {e}, nvmid로 직접 접근 시도")
+            
+            try:
+                # 태그 및 이미지 URL 크롤링 수행
+                tag_value, image_url_value = crawl_image_tag(
+                    nvmid=nvmid,
+                    reward_id=reward_id,
+                    search_url=final_search_url,
+                    headless=headless
+                )
+                
+                if tag_value or image_url_value:
+                    return {'status': 'success', 'reward_id': reward_id, 'tag': tag_value, 'image_url': image_url_value}
+                else:
+                    return {'status': 'failed', 'reward_id': reward_id, 'reason': '태그 및 이미지 URL 크롤링 실패 (태그와 이미지 URL 모두 None 반환)'}
+            except Exception as e:
+                error_msg = str(e)
+                error_traceback = None
+                try:
+                    import traceback
+                    error_traceback = traceback.format_exc()
+                except:
+                    pass
+                
+                logger.error(f"[구간 태그 크롤링 병렬] reward_id={reward_id} 크롤링 오류: {error_msg}", exc_info=True)
+                if error_traceback:
+                    logger.error(f"[구간 태그 크롤링 병렬] reward_id={reward_id} 스택 트레이스:\n{error_traceback}")
+                
+                return {'status': 'failed', 'reward_id': reward_id, 'reason': f'크롤링 중 예외 발생: {error_msg}'}
+        
+        # 병렬 실행
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_record = {executor.submit(crawl_single_record, record): record for record in records}
+            
+            completed = 0
+            for future in as_completed(future_to_record):
+                completed += 1
+                result = future.result()
+                reward_id = result['reward_id']
+                
+                if result['status'] == 'success':
+                    crawled_count += 1
+                    logger.info(f"[구간 태그 크롤링 병렬] [{completed}/{total_count}] ✅ reward_id={reward_id} 크롤링 완료")
+                elif result['status'] == 'failed':
+                    failed_count += 1
+                    logger.warning(f"[구간 태그 크롤링 병렬] [{completed}/{total_count}] ❌ reward_id={reward_id} 크롤링 실패: {result.get('reason', '')}")
+                elif result['status'] == 'skipped':
+                    skipped_count += 1
+                    logger.warning(f"[구간 태그 크롤링 병렬] [{completed}/{total_count}] ⏭️ reward_id={reward_id} 건너뜀: {result.get('reason', '')}")
+        
+        logger.info(f"\n{'='*60}")
+        logger.info(f"[구간 태그 크롤링 병렬] 완료: reward_id {start_id}~{end_id} 구간")
+        logger.info(f"  전체: {total_count}개")
+        logger.info(f"  성공: {crawled_count}개")
+        logger.info(f"  실패: {failed_count}개")
+        logger.info(f"  건너뜀: {skipped_count}개")
+        logger.info(f"{'='*60}\n")
+        
+    except Exception as e:
+        logger.error(f"[구간 태그 크롤링 병렬] 오류: {e}", exc_info=True)
+    finally:
+        db.close()
+    
+    return {
+        'total': total_count,
+        'crawled': crawled_count,
+        'failed': failed_count,
+        'skipped': skipped_count
+    }
 
 
 def crawl_tags_for_range_rewards(start_id: int, end_id: int, headless: bool = True, delay: int = 5) -> Dict[str, int]:
@@ -1358,17 +1604,17 @@ def crawl_tags_for_range_rewards(start_id: int, end_id: int, headless: bool = Tr
                 skipped_count += 1
                 continue
             
-            if not search_url or not search_url.strip():
-                logger.warning(f"[구간 태그 크롤링] ⚠ reward_id={reward_id}: search_url이 없어 건너뜁니다.")
-                skipped_count += 1
-                continue
+            # search_url이 없어도 nvmid만으로 크롤링 가능
+            final_search_url = search_url if (search_url and search_url.strip()) else None
+            if not final_search_url:
+                logger.info(f"[구간 태그 크롤링] reward_id={reward_id}: search_url 없음, nvmid로 직접 접근 시도")
             
             try:
                 # 태그 및 이미지 URL 크롤링 수행
                 tag_value, image_url_value = crawl_image_tag(
-                    search_url=search_url,
                     nvmid=nvmid,
                     reward_id=reward_id,
+                    search_url=final_search_url,
                     headless=headless
                 )
                 
@@ -1713,3 +1959,5 @@ async def extract_main_keywords(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"메인키워드 추출 중 오류가 발생했습니다: {str(e)}"
         )
+
+
