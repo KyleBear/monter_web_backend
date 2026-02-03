@@ -291,6 +291,7 @@ def register_reward_mission(reward_id: int):
 if __name__ == "__main__":
     # reward_id 168 등록
     reward_id = 168
+    reward_id = 169
     result = register_reward_mission(reward_id)
     
     if result and result.get("result") == "Y":
