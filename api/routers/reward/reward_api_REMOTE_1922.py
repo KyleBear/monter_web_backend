@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from database import get_db
-from models import RewardRank, RewardRankHistory
+from models import RewardRank
 from datetime import datetime, timezone, timedelta
 import requests
 import hmac
@@ -32,11 +32,11 @@ API_SECRET = os.getenv("secret_key") or os.getenv("API_SECRET")
 
 # 환경 변수 확인
 if not API_KEY:
-    logger.error("API_KEY 환경 변수가 설정되지 않았습니다. (api_key, API_KEY 중 하나 필요)")
-    raise ValueError("API_KEY 환경 변수를 설정해주세요. (api_key, API_KEY 중 하나)")
+    logger.error("API_KEY 환경 변수가 설정되지 않았습니다. (EXTERNAL_API_KEY, api_key, API_KEY 중 하나 필요)")
+    raise ValueError("API_KEY 환경 변수를 설정해주세요. (EXTERNAL_API_KEY, api_key, API_KEY 중 하나)")
 if not API_SECRET:
-    logger.error("API_SECRET 환경 변수가 설정되지 않았습니다. (secret_key, API_SECRET 중 하나 필요)")
-    raise ValueError("API_SECRET 환경 변수를 설정해주세요. (secret_key, API_SECRET 중 하나)")
+    logger.error("API_SECRET 환경 변수가 설정되지 않았습니다. (EXTERNAL_API_SECRET, api_secret, API_SECRET 중 하나 필요)")
+    raise ValueError("API_SECRET 환경 변수를 설정해주세요. (EXTERNAL_API_SECRET, api_secret, API_SECRET 중 하나)")
 
 # PRD_SERVER에서 실제 API 서버 URL 추출
 BASE_API_URL = PRD_SERVER.replace("/api_document/#/", "").rstrip("/")
@@ -46,7 +46,7 @@ BASE_API_URL = PRD_SERVER.replace("/api_document/#/", "").rstrip("/")
 
 class MissionRegisterRequest(BaseModel):
     """미션 등록 요청 모델"""
-    reward_id: Optional[int] = Field(None, description="RewardRank의 reward_id (없으면 일괄 등록)")
+    reward_id: int = Field(..., description="RewardRank의 reward_id")
 
 
 class MissionReadRequest(BaseModel):
@@ -276,304 +276,7 @@ def send_request_to_prd_server(
         )
 
 
-# ==================== 이력 기록 헬퍼 함수 ====================
-
-def _reward_rank_to_dict(reward_rank: RewardRank) -> dict:
-    """
-    RewardRank 객체를 딕셔너리로 변환
-    
-    Args:
-        reward_rank: RewardRank 객체
-    
-    Returns:
-        딕셔너리
-    """
-    return {
-        "reward_id": reward_rank.reward_id,
-        "keyword": reward_rank.keyword,
-        "store_name": reward_rank.store_name,
-        "product_name": reward_rank.product_name,
-        "productid": reward_rank.productid,
-        "search_url": reward_rank.search_url,
-        "product_url": reward_rank.product_url,
-        "image_url": reward_rank.image_url,
-        "image_tag": reward_rank.image_tag,
-        "nvmid": reward_rank.nvmid,
-        "is_shopping_exposed": reward_rank.is_shopping_exposed,
-        "cpc": reward_rank.cpc,
-        "mnc_idx": reward_rank.mnc_idx,
-        "signature": reward_rank.signature,
-        "created_at": reward_rank.created_at.isoformat() if reward_rank.created_at else None,
-        "updated_at": reward_rank.updated_at.isoformat() if reward_rank.updated_at else None,
-    }
-
-
-def _create_history_record(
-    db: Session,
-    reward_id: int,
-    operation_type: str,
-    api_endpoint: str,
-    before_data: Optional[dict] = None,
-    after_data: Optional[dict] = None,
-    response_data: Optional[dict] = None,
-    mnc_idx: Optional[int] = None,
-    signature: Optional[str] = None,
-    success: bool = False,
-    error_message: Optional[str] = None
-):
-    """
-    작업 이력 기록 헬퍼 함수
-    
-    Args:
-        db: 데이터베이스 세션
-        reward_id: 리워드 ID
-        operation_type: 작업 타입 (CREATE, UPDATE, DELETE)
-        api_endpoint: API 엔드포인트
-        before_data: 작업 전 데이터
-        after_data: 작업 후 데이터
-        response_data: 외부 API 응답 데이터
-        mnc_idx: 미션 IDX
-        signature: 서명
-        success: 성공 여부
-        error_message: 에러 메시지
-    """
-    try:
-        history = RewardRankHistory(
-            reward_id=reward_id,
-            operation_type=operation_type,
-            api_endpoint=api_endpoint,
-            before_data=before_data,
-            after_data=after_data,
-            response_data=response_data,
-            mnc_idx=mnc_idx,
-            signature=signature,
-            success=success,
-            error_message=error_message
-        )
-        db.add(history)
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        logger.error(f"이력 기록 실패: {e}", exc_info=True)
-
-
-# ==================== 헬퍼 함수 (단일 미션 등록) ====================
-
-async def _register_single_mission(reward_rank: RewardRank, db: Session) -> dict:
-    """
-    단일 미션 등록 헬퍼 함수
-    
-    Args:
-        reward_rank: RewardRank 객체
-        db: 데이터베이스 세션
-    
-    Returns:
-        등록 결과 딕셔너리
-    """
-    # 작업 전 데이터 저장 (이력 기록용)
-    before_data = _reward_rank_to_dict(reward_rank)
-    
-    # 고정값 설정
-    mnc_type = "answer"
-    mnc_ans_type = "answer"
-    mnc_title = f"몽테르 미션 {reward_rank.reward_id}"
-    mnc_limitcnt = 1000
-    mnc_mission_starttime = "2026-02-02"
-    mnc_mission_endtime = "2026-02-27"
-    ma_btype1 = "chrome"
-    
-    # RewardRank에서 데이터 가져오기
-    ma_keyword1 = reward_rank.keyword or ""
-    ma_reginum1 = str(reward_rank.reward_id)
-    ma_link1 = reward_rank.product_url or ""
-    ma_answer1 = reward_rank.nvmid or ""
-    ma_answer_ios1 = reward_rank.nvmid or ""
-    
-    # 관리자 메모 생성 (유입 메모)
-    agency = "몽테르|리워드"
-    m_type = "네이버쇼핑-트래픽"
-    code = reward_rank.productid or ""
-    mid = reward_rank.nvmid or ""
-    product_name = reward_rank.product_name or ""
-    
-    mnc_memo = f"{{agency: {agency}, m_type: {m_type}, code: {code}, mid: {mid}, product_name: {product_name}}}"
-    
-    # 파일 데이터 준비
-    files = {}
-    
-    # 이미지 다운로드
-    if reward_rank.image_url:
-        image_data = download_image_from_url(reward_rank.image_url)
-        if image_data:
-            file_ext = "jpg"
-            if reward_rank.image_url.lower().endswith(('.png', '.gif')):
-                file_ext = reward_rank.image_url.split('.')[-1].lower()
-            
-            files["mnc_img"] = (
-                f"mnc_img.{file_ext}",
-                io.BytesIO(image_data),
-                f"image/{file_ext}"
-            )
-            
-            files["ma_img1"] = (
-                f"ma_img1.{file_ext}",
-                io.BytesIO(image_data),
-                f"image/{file_ext}"
-            )
-    
-    # 타임스탬프 생성
-    kst = timezone(timedelta(hours=9))
-    kst_now = datetime.now(kst)
-    timestamp_int = int(kst_now.timestamp())
-    timestamp_str = str(timestamp_int)
-    
-    # 서명 생성 (api_key + timestamp + mnc_title)
-    signature = generate_signature_for_register(
-        API_KEY,
-        timestamp_str,
-        API_SECRET,
-        mnc_title
-    )
-    
-    # 요청 데이터 준비 (multipart/form-data용)
-    form_data = {
-        "api_key": str(API_KEY),
-        "timestamp": timestamp_int,
-        "signature": str(signature),
-        "mnc_type": str(mnc_type),
-        "mnc_ans_type": str(mnc_ans_type),
-        "mnc_title": str(mnc_title),
-        "mnc_point": int(0),
-        "mnc_limitcnt": int(mnc_limitcnt),
-        "mnc_mission_starttime": str(mnc_mission_starttime),
-        "mnc_mission_endtime": str(mnc_mission_endtime),
-        "mnc_memo": str(mnc_memo),
-        "ma_keyword1": str(ma_keyword1) if ma_keyword1 else "",
-        "ma_reginum1": str(ma_reginum1) if ma_reginum1 else "",
-        "ma_btype1": str(ma_btype1),
-        "ma_link1": str(ma_link1) if ma_link1 else "",
-        "ma_answer1": str(ma_answer1) if ma_answer1 else "",
-        "ma_answer_ios1": str(ma_answer_ios1) if ma_answer_ios1 else "",
-    }
-    
-    # PRD 서버로 요청 전송
-    result = send_request_to_prd_server(
-        endpoint="/api/v1/mission/create",
-        method="POST",
-        data=form_data,
-        files=files if files else None,
-        headers={}
-    )
-    
-    # 응답 처리
-    if result["status_code"] == 200:
-        response_data = result["data"]
-        
-        if isinstance(response_data, dict) and response_data.get("result") == "Y":
-            # 응답에서 mnc_idx 추출
-            response_data_obj = response_data.get("data", {})
-            mnc_idx = None
-            
-            # mnc_idx 추출 (응답 구조에 따라 다를 수 있음)
-            if isinstance(response_data_obj, dict):
-                mnc_idx = response_data_obj.get("mnc_idx") or response_data_obj.get("idx") or response_data_obj.get("mnc_idx")
-            elif isinstance(response_data, dict):
-                mnc_idx = response_data.get("mnc_idx") or response_data.get("idx")
-            
-            # reward_rank 테이블에 mnc_idx와 signature 업데이트
-            if mnc_idx:
-                try:
-                    reward_rank.mnc_idx = int(mnc_idx)
-                    reward_rank.signature = signature
-                    db.commit()
-                    db.refresh(reward_rank)
-                    logger.info(f"[DB 업데이트] reward_id={reward_rank.reward_id}, mnc_idx={mnc_idx} 업데이트 완료")
-                    
-                    # 작업 후 데이터 저장
-                    after_data = _reward_rank_to_dict(reward_rank)
-                    
-                    # 이력 기록 (성공)
-                    _create_history_record(
-                        db=db,
-                        reward_id=reward_rank.reward_id,
-                        operation_type="CREATE",
-                        api_endpoint="/api/v1/mission/create",
-                        before_data=before_data,
-                        after_data=after_data,
-                        response_data=response_data_obj if response_data_obj else response_data.get("data"),
-                        mnc_idx=int(mnc_idx),
-                        signature=signature,
-                        success=True
-                    )
-                except Exception as e:
-                    db.rollback()
-                    logger.error(f"[DB 업데이트 실패] reward_id={reward_rank.reward_id}: {e}")
-                    
-                    # 이력 기록 (DB 업데이트 실패)
-                    _create_history_record(
-                        db=db,
-                        reward_id=reward_rank.reward_id,
-                        operation_type="CREATE",
-                        api_endpoint="/api/v1/mission/create",
-                        before_data=before_data,
-                        response_data=response_data_obj if response_data_obj else response_data.get("data"),
-                        mnc_idx=int(mnc_idx) if mnc_idx else None,
-                        signature=signature,
-                        success=False,
-                        error_message=f"DB 업데이트 실패: {str(e)}"
-                    )
-            
-            return {
-                "success": True,
-                "message": response_data.get("message", "미션이 성공적으로 등록되었습니다."),
-                "data": response_data_obj if response_data_obj else response_data.get("data"),
-                "reward_id": reward_rank.reward_id,
-                "mnc_idx": mnc_idx
-            }
-        else:
-            # 이력 기록 (API 응답 실패)
-            _create_history_record(
-                db=db,
-                reward_id=reward_rank.reward_id,
-                operation_type="CREATE",
-                api_endpoint="/api/v1/mission/create",
-                before_data=before_data,
-                response_data=response_data,
-                success=False,
-                error_message=response_data.get("message", "미션 등록 실패")
-            )
-            
-            return {
-                "success": False,
-                "message": response_data.get("message", "미션 등록 실패"),
-                "data": response_data,
-                "reward_id": reward_rank.reward_id
-            }
-    else:
-        # 이력 기록 (HTTP 에러)
-        _create_history_record(
-            db=db,
-            reward_id=reward_rank.reward_id,
-            operation_type="CREATE",
-            api_endpoint="/api/v1/mission/create",
-            before_data=before_data,
-            response_data=result.get("data"),
-            success=False,
-            error_message=f"HTTP {result['status_code']}: {result.get('data', {})}"
-        )
-        
-        return {
-            "success": False,
-            "message": f"미션 등록 실패: {result.get('data', {})}",
-            "data": result.get("data"),
-            "reward_id": reward_rank.reward_id
-        }
-
-
 # ==================== API 엔드포인트 ====================
-
-# 배치 처리 크기 설정
-BATCH_SIZE = 10  # 한 번에 처리할 리워드 개수
 
 @router.post("/api/v1/mission/register", response_model=MissionResponse)
 async def register_mission(
@@ -588,102 +291,19 @@ async def register_mission(
     인증: API Key + HMAC-MD5 서명
     서명 생성: api_key + timestamp + mnc_title (secret_key로 서명)
     
-    - reward_id가 있으면: 해당 reward_id만 등록
-    - reward_id가 없으면: mnc_idx가 없는 모든 reward_rank 데이터를 배치 단위로 일괄 등록
-    
-    등록 성공 시 mnc_idx와 signature를 reward_rank 테이블에 업데이트합니다.
+    reward_id를 받아서 RewardRank 테이블에서 데이터를 조회하고,
+    이미지를 다운로드하여 multipart/form-data 형식으로 업로드합니다.
     """
     try:
-        # reward_id가 있으면 단일 등록
-        if request.reward_id:
-            reward_rank = db.query(RewardRank).filter(
-                RewardRank.reward_id == request.reward_id
-            ).first()
-            
-            if not reward_rank:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"reward_id {request.reward_id}에 해당하는 데이터를 찾을 수 없습니다."
-                )
-            
-            result = await _register_single_mission(reward_rank, db)
-            
-            if result.get("success"):
-                return MissionResponse(
-                    success=True,
-                    message=result.get("message", "미션이 성공적으로 등록되었습니다."),
-                    data=result.get("data")
-                )
-            else:
-                return MissionResponse(
-                    success=False,
-                    message=result.get("message", "미션 등록 실패"),
-                    data=result.get("data")
-                )
-        else:
-            # 일괄 등록 (배치 단위로 처리)
-            # mnc_idx가 없는 모든 reward_rank 조회
-            reward_ranks = db.query(RewardRank).filter(
-                RewardRank.mnc_idx.is_(None)
-            ).all()
-            
-            if not reward_ranks:
-                return MissionResponse(
-                    success=False,
-                    message="등록할 리워드가 없습니다. (모든 리워드가 이미 등록되었거나 데이터가 없습니다.)",
-                    data=None
-                )
-            
-            total_count = len(reward_ranks)
-            success_count = 0
-            fail_count = 0
-            results = []
-            
-            # 배치 단위로 나눠서 처리
-            for i in range(0, total_count, BATCH_SIZE):
-                batch = reward_ranks[i:i+BATCH_SIZE]
-                batch_num = (i // BATCH_SIZE) + 1
-                total_batches = (total_count + BATCH_SIZE - 1) // BATCH_SIZE
-                
-                logger.info(f"[일괄 등록] 배치 {batch_num}/{total_batches} 처리 시작 ({len(batch)}개)")
-                print(f"[일괄 등록] 배치 {batch_num}/{total_batches} 처리 시작 ({len(batch)}개)")
-                
-                # 배치 내 각 리워드 처리
-                for reward_rank in batch:
-                    try:
-                        result = await _register_single_mission(reward_rank, db)
-                        results.append({
-                            "reward_id": reward_rank.reward_id,
-                            "success": result.get("success", False),
-                            "mnc_idx": result.get("mnc_idx"),
-                            "message": result.get("message")
-                        })
-                        
-                        if result.get("success"):
-                            success_count += 1
-                        else:
-                            fail_count += 1
-                    except Exception as e:
-                        fail_count += 1
-                        logger.error(f"reward_id {reward_rank.reward_id} 등록 중 오류: {e}", exc_info=True)
-                        results.append({
-                            "reward_id": reward_rank.reward_id,
-                            "success": False,
-                            "error": str(e)
-                        })
-                
-                logger.info(f"[일괄 등록] 배치 {batch_num}/{total_batches} 완료 (성공: {success_count}, 실패: {fail_count})")
-                print(f"[일괄 등록] 배치 {batch_num}/{total_batches} 완료 (성공: {success_count}, 실패: {fail_count})")
-            
-            return MissionResponse(
-                success=success_count > 0,
-                message=f"일괄 등록 완료: 총 {total_count}개 중 성공 {success_count}개, 실패 {fail_count}개",
-                data={
-                    "total_count": total_count,
-                    "success_count": success_count,
-                    "fail_count": fail_count,
-                    "results": results
-                }
+        # RewardRank 데이터 조회
+        reward_rank = db.query(RewardRank).filter(
+            RewardRank.reward_id == request.reward_id
+        ).first()
+        
+        if not reward_rank:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"reward_id {request.reward_id}에 해당하는 데이터를 찾을 수 없습니다."
             )
         
         # 고정값 설정
@@ -895,7 +515,7 @@ async def read_mission(
         
         # 서명 생성 (generate_signature_for_read 함수 사용)
         signature = generate_signature_for_read(
-            api_key,
+            API_KEY,
             API_SECRET,
             timestamp_str,
             search_param
@@ -903,7 +523,7 @@ async def read_mission(
         
         # 요청 데이터 준비 (form-data 형식)
         request_data = {
-            "api_key": str(api_key),
+            "api_key": str(API_KEY),
             "timestamp": timestamp_int,  # 정수로 전송
             "signature": str(signature),
         }
@@ -998,8 +618,6 @@ async def update_mission(
         
         # RewardRank 데이터 조회 (reward_id가 제공된 경우)
         reward_rank = None
-        before_data = None
-        
         if reward_id:
             reward_rank = db.query(RewardRank).filter(
                 RewardRank.reward_id == reward_id
@@ -1010,18 +628,6 @@ async def update_mission(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"reward_id {reward_id}에 해당하는 데이터를 찾을 수 없습니다."
                 )
-            
-            # 작업 전 데이터 저장 (이력 기록용)
-            before_data = _reward_rank_to_dict(reward_rank)
-        else:
-            # reward_id가 없으면 mnc_idx로 조회
-            reward_rank = db.query(RewardRank).filter(
-                RewardRank.mnc_idx == mnc_idx
-            ).first()
-            
-            if reward_rank:
-                # 작업 전 데이터 저장 (이력 기록용)
-                before_data = _reward_rank_to_dict(reward_rank)
         
         # 미션 데이터 결정 (요청 파라미터가 있으면 사용, 없으면 reward_rank에서 가져오기)
         final_mnc_type = mnc_type or (reward_rank and "answer") or None
@@ -1177,68 +783,18 @@ async def update_mission(
             
             # 성공 응답
             if isinstance(response_data, dict) and response_data.get("result") == "Y":
-                # 작업 후 데이터 저장 (reward_rank가 있는 경우)
-                after_data = None
-                if reward_rank:
-                    db.refresh(reward_rank)
-                    after_data = _reward_rank_to_dict(reward_rank)
-                    
-                    # 이력 기록 (성공)
-                    _create_history_record(
-                        db=db,
-                        reward_id=reward_rank.reward_id,
-                        operation_type="UPDATE",
-                        api_endpoint="/api/v1/mission/update",
-                        before_data=before_data,
-                        after_data=after_data,
-                        response_data=response_data.get("data"),
-                        mnc_idx=mnc_idx,
-                        signature=signature,
-                        success=True
-                    )
-                
                 return MissionResponse(
                     success=True,
                     message=response_data.get("message", "미션이 성공적으로 수정되었습니다."),
                     data=response_data.get("data")
                 )
             else:
-                # 이력 기록 (API 응답 실패)
-                if reward_rank:
-                    _create_history_record(
-                        db=db,
-                        reward_id=reward_rank.reward_id,
-                        operation_type="UPDATE",
-                        api_endpoint="/api/v1/mission/update",
-                        before_data=before_data,
-                        response_data=response_data,
-                        mnc_idx=mnc_idx,
-                        signature=signature,
-                        success=False,
-                        error_message=response_data.get("message", "미션 수정 실패")
-                    )
-                
                 return MissionResponse(
                     success=False,
                     message=response_data.get("message", "미션 수정 실패"),
                     data=response_data
                 )
         else:
-            # 이력 기록 (HTTP 에러)
-            if reward_rank:
-                _create_history_record(
-                    db=db,
-                    reward_id=reward_rank.reward_id,
-                    operation_type="UPDATE",
-                    api_endpoint="/api/v1/mission/update",
-                    before_data=before_data,
-                    response_data=result.get("data"),
-                    mnc_idx=mnc_idx,
-                    signature=signature,
-                    success=False,
-                    error_message=f"HTTP {result['status_code']}: {result.get('data', {})}"
-                )
-            
             raise HTTPException(
                 status_code=result["status_code"],
                 detail=f"미션 수정 실패: {result.get('data', {})}"
@@ -1247,18 +803,6 @@ async def update_mission(
     except HTTPException:
         raise
     except Exception as e:
-        # 이력 기록 (예외 발생)
-        if reward_rank:
-            _create_history_record(
-                db=db,
-                reward_id=reward_rank.reward_id,
-                operation_type="UPDATE",
-                api_endpoint="/api/v1/mission/update",
-                before_data=before_data,
-                success=False,
-                error_message=str(e)
-            )
-        
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"미션 수정 중 오류가 발생했습니다: {str(e)}"
@@ -1281,15 +825,6 @@ async def delete_mission(
     try:
         # API Key 결정 (요청에 없으면 env의 API_KEY 사용)
         api_key = request.api_key or API_KEY
-        
-        # 작업 전 데이터 저장 (mnc_idx로 조회)
-        reward_rank = db.query(RewardRank).filter(
-            RewardRank.mnc_idx == request.mnc_idx
-        ).first()
-        
-        before_data = None
-        if reward_rank:
-            before_data = _reward_rank_to_dict(reward_rank)
         
         # 타임스탬프 생성 (현재 시간)
         kst = timezone(timedelta(hours=9))
@@ -1333,41 +868,12 @@ async def delete_mission(
         if result["status_code"] == 200:
             response_data = result["data"]
             
-            # 이력 기록 (성공)
-            if reward_rank:
-                _create_history_record(
-                    db=db,
-                    reward_id=reward_rank.reward_id,
-                    operation_type="DELETE",
-                    api_endpoint="/api/v1/mission/delete",
-                    before_data=before_data,
-                    response_data=response_data,
-                    mnc_idx=request.mnc_idx,
-                    signature=signature,
-                    success=True
-                )
-            
             return MissionResponse(
                 success=True,
                 message=response_data.get("message", "미션이 성공적으로 삭제되었습니다."),
                 data=response_data
             )
         else:
-            # 이력 기록 (HTTP 에러)
-            if reward_rank:
-                _create_history_record(
-                    db=db,
-                    reward_id=reward_rank.reward_id,
-                    operation_type="DELETE",
-                    api_endpoint="/api/v1/mission/delete",
-                    before_data=before_data,
-                    response_data=result.get("data"),
-                    mnc_idx=request.mnc_idx,
-                    signature=signature,
-                    success=False,
-                    error_message=f"HTTP {result['status_code']}: {result.get('data', {})}"
-                )
-            
             raise HTTPException(
                 status_code=result["status_code"],
                 detail=f"미션 삭제 실패: {result.get('data', {})}"
@@ -1376,18 +882,6 @@ async def delete_mission(
     except HTTPException:
         raise
     except Exception as e:
-        # 이력 기록 (예외 발생)
-        if reward_rank:
-            _create_history_record(
-                db=db,
-                reward_id=reward_rank.reward_id,
-                operation_type="DELETE",
-                api_endpoint="/api/v1/mission/delete",
-                before_data=before_data,
-                success=False,
-                error_message=str(e)
-            )
-        
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"미션 삭제 중 오류가 발생했습니다: {str(e)}"

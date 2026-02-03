@@ -15,6 +15,12 @@ env/
 ENV/
 .venv
 
+# 비밀 정보 파일 (서비스 계정 키 등)
+meal-planner-nrank.json
+*-nrank.json
+*service*.json
+*credentials*.json
+
 # IDE 설정 파일
 .vscode/
 .idea/

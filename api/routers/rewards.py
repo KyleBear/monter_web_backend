@@ -244,3 +244,5 @@ async def update_reward_image_tag(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"이미지 태그 업데이트 중 오류가 발생했습니다: {str(e)}"
         )
+
+

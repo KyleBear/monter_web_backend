@@ -20,11 +20,6 @@ class DataSection(Base):
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     
-    # 관계 (제거됨)
-    # proxy_ips = relationship("ProxyIP", back_populates="datasection")
-    # ip_check_logs = relationship("IPCheckLog", back_populates="datasection")
-    # cookie_collection_logs = relationship("CookieCollectionLog", back_populates="datasection")
-
 
 # 프록시 IP 테이블
 class ProxyIP(Base):
@@ -39,12 +34,6 @@ class ProxyIP(Base):
     is_active = Column(Boolean, default=True, comment='현재 사용 가능한지')
     last_checked = Column(DateTime)
     
-    # 관계 (제거됨)
-    # datasection = relationship("DataSection", back_populates="proxy_ips")
-    # proxy_logs = relationship("ProxyLog", back_populates="proxy")
-    # ip_check_logs = relationship("IPCheckLog", back_populates="proxy")
-    # cookie_collections = relationship("CookieCollection", back_populates="proxy")
-    # products = relationship("Product", back_populates="proxy")
 
 
 # 상품 테이블
@@ -287,6 +276,31 @@ class RewardRank(Base):
     nvmid = Column(String(100), comment='네이버 상품 ID')
     is_shopping_exposed = Column(Boolean, default=False, comment='통검 노출여부 (boolean)')
     cpc = Column(Boolean, default=False, comment='CPC 여부 (boolean)')
+    mnc_idx = Column(Integer, nullable=True, comment='외부 파트너사 미션 IDX')
+    signature = Column(String(255), nullable=True, comment='미션 등록 시 생성된 서명')
+
+
+# 리워드 랭크 작업 이력 테이블
+class RewardRankHistory(Base):
+    __tablename__ = 'reward_rank_history'
+    
+    history_id = Column(BigInteger, primary_key=True, autoincrement=True, comment='이력 ID')
+    reward_id = Column(BigInteger, nullable=False, comment='리워드 ID')
+    operation_type = Column(String(20), nullable=False, comment='작업 타입 (CREATE, UPDATE, DELETE)')
+    api_endpoint = Column(String(255), nullable=True, comment='API 엔드포인트')
+    before_data = Column(JSON, nullable=True, comment='작업 전 데이터 (JSON)')
+    after_data = Column(JSON, nullable=True, comment='작업 후 데이터 (JSON)')
+    response_data = Column(JSON, nullable=True, comment='외부 API 응답 데이터 (JSON)')
+    mnc_idx = Column(Integer, nullable=True, comment='외부 파트너사 미션 IDX')
+    signature = Column(String(255), nullable=True, comment='미션 등록/수정 시 생성된 서명')
+    success = Column(Boolean, nullable=False, default=False, comment='작업 성공 여부')
+    error_message = Column(Text, nullable=True, comment='에러 메시지 (실패 시)')
+    created_at = Column(DateTime, default=func.now(), nullable=False, comment='생성일시')
+    
+    # 인덱스
+    __table_args__ = (
+        Index('idx_reward_id', 'reward_id'),
+    )
 
 
 # 리워드 링크 테이블 (짧은 링크 관리)

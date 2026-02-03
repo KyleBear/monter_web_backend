@@ -1,0 +1,5 @@
+manual_rank_update.py: api.routers.crol의 함수를 import해서 사용
+manual_rank_update2.py: api.routers.crol의 함수를 import해서 사용
+manual_tag_crawling.py: api.routers.keyword_search_api2의 함수를 import해서 사용
+manual_reward_processing.py: api.routers.rewards, api.routers.keyword_search_api2의 함수를 import해서 사용
+manual_single_tag_crawling.py: api.routers.keyword_search_api2의 함수를 import해서 사용
