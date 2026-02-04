@@ -1774,8 +1774,16 @@ def crawl_smartstore_direct(product_url: str, headless: bool = False) -> dict:
             image_element = wait.until(EC.presence_of_element_located(
                 (By.XPATH, "/html/body/div[1]/div/div[4]/div[2]/div[2]/div/div[2]/div[1]/div[1]/div[2]/img")
             ))
-            result['image_url'] = image_element.get_attribute('src')
-            logger.info(f"[직접 크롤링] ✓ 이미지 URL: {result['image_url']}")
+            image_url = image_element.get_attribute('src')
+            if image_url:
+                image_url = image_url.strip()
+                # 404 이미지 URL 필터링
+                if '404' in image_url or 'grafolio' in image_url or 'ssl.pstatic.net/static/grafolio' in image_url:
+                    logger.warning(f"[직접 크롤링] ⚠️ 404 이미지 URL 감지, 무시: {image_url[:100]}...")
+                    result['image_url'] = None
+                else:
+                    result['image_url'] = image_url
+                    logger.info(f"[직접 크롤링] ✓ 이미지 URL: {result['image_url']}")
         except TimeoutException:
             logger.error("[직접 크롤링] ❌ 이미지 크롤링 실패 (Timeout)")
         except Exception as e:

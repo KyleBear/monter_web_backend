@@ -818,7 +818,12 @@ def crawl_image_tag(nvmid: str, reward_id: int, search_url: Optional[str] = None
                     image_url_value = img_with_alt.get('src') or img_with_alt.get('data-src')
                     if image_url_value:
                         image_url_value = image_url_value.strip()
-                        logger.info(f"[이미지 URL 크롤링] ✅ 이미지 URL 크롤링 성공 (alt='대표이미지'): {image_url_value[:100]}...")
+                        # 404 이미지 URL 필터링
+                        if '404' in image_url_value or 'grafolio' in image_url_value or 'ssl.pstatic.net/static/grafolio' in image_url_value:
+                            logger.warning(f"[이미지 URL 크롤링] ⚠️ 404 이미지 URL 감지, 무시: {image_url_value[:100]}...")
+                            image_url_value = None
+                        else:
+                            logger.info(f"[이미지 URL 크롤링] ✅ 이미지 URL 크롤링 성공 (alt='대표이미지'): {image_url_value[:100]}...")
             except Exception as e:
                 logger.warning(f"[이미지 URL 크롤링] alt 속성 검색 실패: {e}")
             
@@ -836,7 +841,12 @@ def crawl_image_tag(nvmid: str, reward_id: int, search_url: Optional[str] = None
                         image_url_value = element.get('src') or element.get('data-src')
                         if image_url_value:
                             image_url_value = image_url_value.strip()
-                            logger.info(f"[이미지 URL 크롤링] ✅ 이미지 URL 크롤링 성공 (상대 XPath): {image_url_value[:100]}...")
+                            # 404 이미지 URL 필터링
+                            if '404' in image_url_value or 'grafolio' in image_url_value or 'ssl.pstatic.net/static/grafolio' in image_url_value:
+                                logger.warning(f"[이미지 URL 크롤링] ⚠️ 404 이미지 URL 감지, 무시: {image_url_value[:100]}...")
+                                image_url_value = None
+                            else:
+                                logger.info(f"[이미지 URL 크롤링] ✅ 이미지 URL 크롤링 성공 (상대 XPath): {image_url_value[:100]}...")
                 except Exception as e:
                     logger.warning(f"[이미지 URL 크롤링] 상대 XPath 사용 실패: {e}")
             
@@ -854,7 +864,12 @@ def crawl_image_tag(nvmid: str, reward_id: int, search_url: Optional[str] = None
                         image_url_value = element.get('src') or element.get('data-src')
                         if image_url_value:
                             image_url_value = image_url_value.strip()
-                            logger.info(f"[이미지 URL 크롤링] ✅ 이미지 URL 크롤링 성공 (Full XPath): {image_url_value[:100]}...")
+                            # 404 이미지 URL 필터링
+                            if '404' in image_url_value or 'grafolio' in image_url_value or 'ssl.pstatic.net/static/grafolio' in image_url_value:
+                                logger.warning(f"[이미지 URL 크롤링] ⚠️ 404 이미지 URL 감지, 무시: {image_url_value[:100]}...")
+                                image_url_value = None
+                            else:
+                                logger.info(f"[이미지 URL 크롤링] ✅ 이미지 URL 크롤링 성공 (Full XPath): {image_url_value[:100]}...")
                 except Exception as e:
                     logger.warning(f"[이미지 URL 크롤링] Full XPath 직접 사용 실패: {e}")
             
@@ -881,8 +896,14 @@ def crawl_image_tag(nvmid: str, reward_id: int, search_url: Optional[str] = None
                             image_url_value = element.get('src') or element.get('data-src')
                             if image_url_value:
                                 image_url_value = image_url_value.strip()
-                                logger.info(f"[이미지 URL 크롤링] ✅ 이미지 URL 크롤링 성공 (CSS 선택자: {selector}): {image_url_value[:100]}...")
-                                break
+                                # 404 이미지 URL 필터링
+                                if '404' in image_url_value or 'grafolio' in image_url_value or 'ssl.pstatic.net/static/grafolio' in image_url_value:
+                                    logger.warning(f"[이미지 URL 크롤링] ⚠️ 404 이미지 URL 감지, 무시: {image_url_value[:100]}...")
+                                    image_url_value = None
+                                    continue
+                                else:
+                                    logger.info(f"[이미지 URL 크롤링] ✅ 이미지 URL 크롤링 성공 (CSS 선택자: {selector}): {image_url_value[:100]}...")
+                                    break
                     except Exception as e:
                         logger.debug(f"[이미지 URL 크롤링] CSS 선택자 '{selector}' 실패: {e}")
                         continue
@@ -938,7 +959,12 @@ def crawl_image_tag(nvmid: str, reward_id: int, search_url: Optional[str] = None
                     """)
                     if image_url_js:
                         image_url_value = image_url_js.strip()
-                        logger.info(f"[이미지 URL 크롤링] ✅ 이미지 URL 크롤링 성공 (JavaScript): {image_url_value[:100]}...")
+                        # 404 이미지 URL 필터링
+                        if '404' in image_url_value or 'grafolio' in image_url_value or 'ssl.pstatic.net/static/grafolio' in image_url_value:
+                            logger.warning(f"[이미지 URL 크롤링] ⚠️ 404 이미지 URL 감지, 무시: {image_url_value[:100]}...")
+                            image_url_value = None
+                        else:
+                            logger.info(f"[이미지 URL 크롤링] ✅ 이미지 URL 크롤링 성공 (JavaScript): {image_url_value[:100]}...")
                 except Exception as e:
                     logger.debug(f"[이미지 URL 크롤링] JavaScript 이미지 확인 실패: {e}")
             
@@ -1178,12 +1204,26 @@ def crawl_image_tag(nvmid: str, reward_id: int, search_url: Optional[str] = None
                         logger.info(f"[DB]    새 태그: {tag_value}")
                     
                     if image_url_value:
-                        old_image_url = existing.image_url
-                        existing.image_url = image_url_value
-                        updated = True
-                        logger.info(f"[DB] ✅ reward_id={reward_id} 이미지 URL 업데이트 완료")
-                        logger.info(f"[DB]    이전 이미지 URL: {old_image_url}")
-                        logger.info(f"[DB]    새 이미지 URL: {image_url_value[:100]}...")
+                        # image_url이 이미 있으면 업데이트하지 않음 (404 이미지 방지)
+                        if existing.image_url and existing.image_url.strip() and existing.image_url.strip() != '':
+                            # 404 이미지 URL인 경우는 업데이트
+                            if '404' in existing.image_url or 'grafolio' in existing.image_url:
+                                old_image_url = existing.image_url
+                                existing.image_url = image_url_value
+                                updated = True
+                                logger.info(f"[DB] ✅ reward_id={reward_id} 이미지 URL 업데이트 완료 (404 이미지 교체)")
+                                logger.info(f"[DB]    이전 이미지 URL: {old_image_url}")
+                                logger.info(f"[DB]    새 이미지 URL: {image_url_value[:100]}...")
+                            else:
+                                logger.info(f"[DB] ⏭️ reward_id={reward_id} 이미지 URL이 이미 존재하여 업데이트하지 않음: {existing.image_url[:100]}...")
+                        else:
+                            # image_url이 없거나 빈 문자열인 경우만 업데이트
+                            old_image_url = existing.image_url
+                            existing.image_url = image_url_value
+                            updated = True
+                            logger.info(f"[DB] ✅ reward_id={reward_id} 이미지 URL 업데이트 완료")
+                            logger.info(f"[DB]    이전 이미지 URL: {old_image_url}")
+                            logger.info(f"[DB]    새 이미지 URL: {image_url_value[:100]}...")
                     
                     if updated:
                         existing.updated_at = datetime.now()
@@ -1442,9 +1482,75 @@ def crawl_tags_for_range_rewards_parallel(start_id: int, end_id: int, headless: 
             reward_id = record.reward_id
             nvmid = record.nvmid
             search_url = record.search_url
+            product_url = record.product_url
+            image_url = record.image_url  # 이미 image_url이 있으면 크롤링하지 않음
+            
+            # image_url이 이미 있으면 크롤링 스킵 (404 이미지 제외)
+            if image_url and image_url.strip() and image_url.strip() != '':
+                if '404' not in image_url and 'grafolio' not in image_url and 'ssl.pstatic.net/static/grafolio' not in image_url:
+                    logger.info(f"[구간 태그 크롤링 병렬] reward_id={reward_id}: image_url이 이미 존재하여 크롤링 스킵: {image_url[:100]}...")
+                    # 태그만 크롤링 시도 (product_url이 있으면 직접 크롤링)
+                    if product_url and product_url.strip():
+                        try:
+                            from api.routers.tag_crol import crawl_smartstore_direct
+                            crawl_result = crawl_smartstore_direct(product_url, headless=headless)
+                            tag_value = crawl_result.get('image_tag')
+                            if tag_value:
+                                # DB 업데이트 (태그만)
+                                thread_db = SessionLocal()
+                                try:
+                                    existing = thread_db.query(RewardRank).filter(RewardRank.reward_id == reward_id).first()
+                                    if existing:
+                                        existing.image_tag = tag_value
+                                        existing.updated_at = datetime.now()
+                                        thread_db.commit()
+                                        logger.info(f"[구간 태그 크롤링 병렬] ✅ reward_id={reward_id} 태그만 업데이트 완료: {tag_value}")
+                                finally:
+                                    thread_db.close()
+                            return {'status': 'success', 'reward_id': reward_id, 'tag': tag_value, 'image_url': image_url}
+                        except Exception as e:
+                            logger.warning(f"[구간 태그 크롤링 병렬] reward_id={reward_id} 태그 크롤링 실패: {e}")
+                    return {'status': 'skipped', 'reward_id': reward_id, 'reason': 'image_url이 이미 존재하여 크롤링 스킵'}
             
             # 데이터 검증
             if not nvmid or not nvmid.strip():
+                # product_url이 있으면 직접 크롤링 시도
+                if product_url and product_url.strip():
+                    try:
+                        from api.routers.tag_crol import crawl_smartstore_direct
+                        crawl_result = crawl_smartstore_direct(product_url, headless=headless)
+                        tag_value = crawl_result.get('image_tag')
+                        image_url_value = crawl_result.get('image_url')
+                        
+                        # 404 이미지 URL 필터링
+                        if image_url_value and ('404' in image_url_value or 'grafolio' in image_url_value or 'ssl.pstatic.net/static/grafolio' in image_url_value):
+                            logger.warning(f"[구간 태그 크롤링 병렬] ⚠️ reward_id={reward_id} 404 이미지 URL 감지, 무시")
+                            image_url_value = None
+                        
+                        if tag_value or image_url_value:
+                            # DB 업데이트
+                            thread_db = SessionLocal()
+                            try:
+                                existing = thread_db.query(RewardRank).filter(RewardRank.reward_id == reward_id).first()
+                                if existing:
+                                    updated = False
+                                    if tag_value:
+                                        existing.image_tag = tag_value
+                                        updated = True
+                                    if image_url_value:
+                                        existing.image_url = image_url_value
+                                        updated = True
+                                    if updated:
+                                        existing.updated_at = datetime.now()
+                                        thread_db.commit()
+                            finally:
+                                thread_db.close()
+                            return {'status': 'success', 'reward_id': reward_id, 'tag': tag_value, 'image_url': image_url_value}
+                        else:
+                            return {'status': 'failed', 'reward_id': reward_id, 'reason': 'product_url 직접 크롤링 실패 (태그 및 이미지 URL 모두 None)'}
+                    except Exception as e:
+                        logger.error(f"[구간 태그 크롤링 병렬] reward_id={reward_id} product_url 직접 크롤링 오류: {e}", exc_info=True)
+                        return {'status': 'failed', 'reward_id': reward_id, 'reason': f'product_url 직접 크롤링 중 예외 발생: {str(e)}'}
                 return {'status': 'skipped', 'reward_id': reward_id, 'reason': 'nvmid 없음 (reward_rank 테이블에 nvmid가 없거나 빈 문자열)'}
             
             # search_url이 없으면 키워드로부터 생성 시도
@@ -1463,15 +1569,56 @@ def crawl_tags_for_range_rewards_parallel(start_id: int, end_id: int, headless: 
                         
                         # if reward_target and reward_target.keyword:
                         #     # 키워드로부터 search_url 생성
+                        if record.keyword:
                             final_search_url = generate_search_url(record.keyword)
-                            logger.info(f"[구간 태그 크롤링 병렬] reward_id={reward_id}: search_url 생성 성공 (키워드: {reward_link.keyword})")
+                            logger.info(f"[구간 태그 크롤링 병렬] reward_id={reward_id}: search_url 생성 성공 (키워드: {record.keyword})")
                     finally:
                         thread_db.close()
                 except Exception as e:
                     logger.warning(f"[구간 태그 크롤링 병렬] reward_id={reward_id} search_url 생성 실패: {e}, nvmid로 직접 접근 시도")
             
+            # product_url이 있으면 직접 크롤링 우선 시도
+            if product_url and product_url.strip():
+                try:
+                    from api.routers.tag_crol import crawl_smartstore_direct
+                    logger.info(f"[구간 태그 크롤링 병렬] reward_id={reward_id}: product_url 직접 크롤링 시도: {product_url}")
+                    crawl_result = crawl_smartstore_direct(product_url, headless=headless)
+                    tag_value = crawl_result.get('image_tag')
+                    image_url_value = crawl_result.get('image_url')
+                    
+                    # 404 이미지 URL 필터링
+                    if image_url_value and ('404' in image_url_value or 'grafolio' in image_url_value or 'ssl.pstatic.net/static/grafolio' in image_url_value):
+                        logger.warning(f"[구간 태그 크롤링 병렬] ⚠️ reward_id={reward_id} 404 이미지 URL 감지, 무시")
+                        image_url_value = None
+                    
+                    if tag_value or image_url_value:
+                        # DB 업데이트
+                        thread_db = SessionLocal()
+                        try:
+                            existing = thread_db.query(RewardRank).filter(RewardRank.reward_id == reward_id).first()
+                            if existing:
+                                updated = False
+                                if tag_value:
+                                    existing.image_tag = tag_value
+                                    updated = True
+                                if image_url_value:
+                                    # image_url이 이미 있으면 업데이트하지 않음 (404 이미지 제외)
+                                    if not existing.image_url or not existing.image_url.strip() or '404' in existing.image_url or 'grafolio' in existing.image_url:
+                                        existing.image_url = image_url_value
+                                        updated = True
+                                if updated:
+                                    existing.updated_at = datetime.now()
+                                    thread_db.commit()
+                        finally:
+                            thread_db.close()
+                        return {'status': 'success', 'reward_id': reward_id, 'tag': tag_value, 'image_url': image_url_value}
+                    else:
+                        logger.warning(f"[구간 태그 크롤링 병렬] reward_id={reward_id}: product_url 직접 크롤링 결과 없음, nvmid 기반 크롤링으로 폴백")
+                except Exception as e:
+                    logger.warning(f"[구간 태그 크롤링 병렬] reward_id={reward_id} product_url 직접 크롤링 실패: {e}, nvmid 기반 크롤링으로 폴백")
+            
             try:
-                # 태그 및 이미지 URL 크롤링 수행
+                # 태그 및 이미지 URL 크롤링 수행 (nvmid 기반)
                 tag_value, image_url_value = crawl_image_tag(
                     nvmid=nvmid,
                     reward_id=reward_id,

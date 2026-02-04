@@ -376,12 +376,13 @@ async def _register_single_mission(reward_rank: RewardRank, db: Session) -> dict
     # 고정값 설정
     mnc_type = "answer"
     mnc_ans_type = "answer"
-    mnc_title = f"몽테르 미션 {reward_rank.reward_id}"
+    # mnc_title = f"몽테르 미션 {reward_rank.reward_id}"
+    mnc_title = f"테스트 미션 [참여금지]"
     mnc_limitcnt = 1000
     mnc_mission_starttime = "2026-02-02"
     mnc_mission_endtime = "2026-02-27"
     ma_btype1 = "chrome"
-    
+    mnc_description = "상품번호를 맞추고 리워드를 가져가세요"
     # RewardRank에서 데이터 가져오기
     ma_keyword1 = reward_rank.keyword or ""
     ma_reginum1 = str(reward_rank.reward_id)
@@ -454,6 +455,7 @@ async def _register_single_mission(reward_rank: RewardRank, db: Session) -> dict
         "ma_link1": str(ma_link1) if ma_link1 else "",
         "ma_answer1": str(ma_answer1) if ma_answer1 else "",
         "ma_answer_ios1": str(ma_answer_ios1) if ma_answer_ios1 else "",
+        "mnc_description": str(mnc_description),
     }
     
     # PRD 서버로 요청 전송
@@ -685,15 +687,18 @@ async def register_mission(
                     "results": results
                 }
             )
-        
+        #Todo: 테스트 미션 [참여금지] 미션 등록 처리
+        #TodoL starttime end time 동적 처리, limitcnt 처리
         # 고정값 설정
         mnc_type = "answer"
         mnc_ans_type = "answer"
-        mnc_title = f"몽테르 미션 {request.reward_id}"
+        # mnc_title = f"몽테르 미션 {request.reward_id}"
+        mnc_title = f"테스트 미션 [참여금지]"
         mnc_limitcnt = 1000
         mnc_mission_starttime = "2026-02-02"
         mnc_mission_endtime = "2026-02-27"
         ma_btype1 = "chrome"
+        mnc_description = "상품번호를 맞추고 리워드를 가져가세요"
         
         # RewardRank에서 데이터 가져오기
         ma_keyword1 = reward_rank.keyword or ""  # ma_keyword 컬럼이 없으므로 keyword 사용
@@ -782,6 +787,7 @@ async def register_mission(
             "ma_link1": str(ma_link1) if ma_link1 else "",
             "ma_answer1": str(ma_answer1) if ma_answer1 else "",
             "ma_answer_ios1": str(ma_answer_ios1) if ma_answer_ios1 else "",
+            "mnc_description": str(mnc_description),
         }
         
         # 전송되는 form_data 전체 로그 출력
