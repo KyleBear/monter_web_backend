@@ -52,9 +52,9 @@ DEFAULT_SPREADSHEET_ID = '1aJzc2kw9dLghK-ltp7B0jyAQT7SjcgYRd0l0qOl1FmA'
 # 시작 행 (7행부터)
 START_ROW = 7
 # 업데이트할 최대 행 수
-MAX_ROWS = 2000
+MAX_ROWS = 4000
 # 읽을 최대 행 수 (3000개 행까지 읽기)
-READ_MAX_ROWS = 3000
+READ_MAX_ROWS = 4000
 
 
 class GoogleSheetsRankUpdater:

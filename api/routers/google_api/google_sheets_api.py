@@ -11,6 +11,13 @@ import logging
 import re
 from typing import List, Optional, Dict, Union
 from datetime import datetime
+
+# 프로젝트 루트를 Python 경로에 추가 (직접 실행 시)
+current_file = os.path.abspath(__file__)
+project_root = os.path.abspath(os.path.join(os.path.dirname(current_file), '..', '..', '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -40,7 +47,8 @@ router = APIRouter()
 
 # Google Sheets API 설정
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-CREDENTIALS_FILE = 'credential.json'
+# 인증 파일 우선순위: meal-planner-nrank.json > credential.json
+CREDENTIALS_FILE = 'meal-planner-nrank.json' if os.path.exists('meal-planner-nrank.json') else 'credential.json'
 SHEET_NAME = 'N쇼핑'
 DEFAULT_SPREADSHEET_ID = '1aJzc2kw9dLghK-ltp7B0jyAQT7SjcgYRd0l0qOl1FmA'
 TIMESTAMP_ROW = 6  # 6행에 타임스탬프 기록
@@ -282,7 +290,7 @@ class GoogleSheetsRankUpdater:
     
     def get_rank_by_naver_api(self, keyword: str, nvmid: str, price_nvmid: Optional[str] = None, max_rank: int = 1000) -> Union[int, str, None]:
         """
-        네이버 API로 순위 조회
+        네이버 OpenAPI로 순위 조회
         
         Args:
             keyword: 검색 키워드
@@ -299,13 +307,12 @@ class GoogleSheetsRankUpdater:
         try:
             # 가격비교 nvmid가 있으면 우선 사용
             target_nvmid = price_nvmid if price_nvmid else nvmid
-            use_price_comparison = bool(price_nvmid)
             
-            logger.debug(f"순위 조회: keyword='{keyword}', nvmid='{target_nvmid}', 가격비교={use_price_comparison}")
+            logger.debug(f"OpenAPI 순위 조회: keyword='{keyword}', nvmid='{target_nvmid}'")
             
-            # 최대 1000등까지 조회 (10페이지, 각 페이지 100개)
-            max_pages = 10
-            display = 100
+            # OpenAPI로 순위 조회 (최대 1000등까지, 여러 페이지 조회)
+            # get_api_rank_by_keyword는 한 번에 100개까지만 조회하므로, 여러 페이지를 조회해야 함
+            max_pages = min((max_rank + 99) // 100, 10)  # 최대 10페이지
             
             for page in range(1, max_pages + 1):
                 start = (page - 1) * 100 + 1  # 1, 101, 201, ...
@@ -314,10 +321,10 @@ class GoogleSheetsRankUpdater:
                     break
                 
                 try:
-                    # 네이버 API 호출
+                    # OpenAPI로 검색 (100개씩)
                     api_results = get_shopping_rank_with_ad_flag(
                         keyword,
-                        display=display,
+                        display=100,
                         start=start,
                         filter=None
                     )
@@ -334,37 +341,30 @@ class GoogleSheetsRankUpdater:
                             # 최대 순위 초과
                             break
                         
-                        # 가격비교 nvmid 사용 시: productId로 직접 매칭
-                        if use_price_comparison:
-                            product_id = str(item.get('productId', '')).strip()
-                            if product_id == target_nvmid:
-                                logger.info(f"가격비교 순위 매칭 성공: keyword='{keyword}', nvmid='{target_nvmid}', rank={rank}")
-                                return rank
+                        # nvmid 매칭
+                        product_id = str(item.get('productId', '')).strip()
+                        link = item.get('link', '')
+                        nvmid_from_link = None
                         
-                        # 원부 nvmid 사용 시: productId 또는 link에서 nvmid 추출하여 매칭
-                        else:
-                            product_id = str(item.get('productId', '')).strip()
-                            link = item.get('link', '')
-                            nvmid_from_link = None
+                        if link:
+                            patterns = [
+                                r'nv_mid[=_](\d+)',
+                                r'nvmid[=_](\d+)',
+                                r'nv-mid[=_](\d+)',
+                                r'/catalog/(\d+)',
+                            ]
                             
-                            if link:
-                                patterns = [
-                                    r'nv_mid[=_](\d+)',
-                                    r'nvmid[=_](\d+)',
-                                    r'nv-mid[=_](\d+)',
-                                    r'/catalog/(\d+)',
-                                ]
-                                
-                                for pattern in patterns:
-                                    match = re.search(pattern, link, re.IGNORECASE)
-                                    if match:
-                                        nvmid_from_link = match.group(1)
-                                        break
-                            
-                            if (product_id and product_id == target_nvmid) or \
-                               (nvmid_from_link and nvmid_from_link == target_nvmid):
-                                logger.info(f"원부 순위 매칭 성공: keyword='{keyword}', nvmid='{target_nvmid}', rank={rank}")
-                                return rank
+                            for pattern in patterns:
+                                match = re.search(pattern, link, re.IGNORECASE)
+                                if match:
+                                    nvmid_from_link = match.group(1)
+                                    break
+                        
+                        # nvmid 매칭 확인
+                        if (product_id and product_id == target_nvmid) or \
+                           (nvmid_from_link and nvmid_from_link == target_nvmid):
+                            logger.info(f"OpenAPI 순위 매칭 성공: keyword='{keyword}', nvmid='{target_nvmid}', rank={rank}")
+                            return rank
                     
                     # API 호출 간격
                     time.sleep(0.2)
@@ -372,6 +372,15 @@ class GoogleSheetsRankUpdater:
                 except Exception as e:
                     logger.error(f"페이지 {page} 조회 중 오류: {e}", exc_info=True)
                     continue
+            
+            # get_api_rank_by_keyword를 사용하여 추가 확인 (100개 이내에서 빠른 확인)
+            try:
+                rank = get_api_rank_by_keyword(keyword, target_nvmid)
+                if rank:
+                    logger.info(f"OpenAPI 순위 조회 성공 (get_api_rank_by_keyword): keyword='{keyword}', nvmid='{target_nvmid}', rank={rank}")
+                    return rank
+            except Exception as e:
+                logger.debug(f"get_api_rank_by_keyword 호출 중 오류 (무시): {e}")
             
             logger.debug(f"순위 조회 실패: keyword='{keyword}', nvmid='{target_nvmid}' (1000등 이내에서 매칭 실패)")
             return "확인불가"
@@ -425,9 +434,12 @@ class GoogleSheetsRankUpdater:
             logger.error(f"순위 업데이트 중 오류: {e}", exc_info=True)
             raise
     
-    def update_all_ranks(self) -> Dict:
+    def update_all_ranks(self, insert_column_first: bool = True) -> Dict:
         """
         전체 순위 업데이트 프로세스 실행
+        
+        Args:
+            insert_column_first: True이면 먼저 J열을 삽입하고 타임스탬프를 기록 (기본값: True)
         
         Returns:
             dict: 업데이트 결과 통계
@@ -439,7 +451,18 @@ class GoogleSheetsRankUpdater:
             logger.info(f"시트 이름: {SHEET_NAME}")
             logger.info("=" * 60)
             
+            # 0. J열 삽입 및 타임스탬프 기록 (옵션)
+            if insert_column_first:
+                logger.info("\n[1단계] J열 삽입 및 타임스탬프 기록 시작...")
+                try:
+                    insert_j_column_and_timestamp(self.spreadsheet_id)
+                    logger.info("✅ J열 삽입 및 타임스탬프 기록 완료")
+                except Exception as e:
+                    logger.warning(f"⚠️ J열 삽입 실패 (계속 진행): {e}")
+                    # J열 삽입 실패해도 순위 업데이트는 계속 진행
+            
             # 1. 입력 데이터 읽기
+            logger.info("\n[2단계] 입력 데이터 읽기 시작...")
             input_data = self.read_input_data()
             
             if not input_data:
@@ -452,6 +475,7 @@ class GoogleSheetsRankUpdater:
                 }
             
             # 2. 각 행에 대해 순위 조회
+            logger.info("\n[3단계] 순위 조회 시작...")
             ranks = []
             total_count = len(input_data)
             success_count = 0
@@ -489,10 +513,12 @@ class GoogleSheetsRankUpdater:
             
             # "확인불가" 개수도 카운트
             unavailable_count = sum(1 for r in ranks if r == "확인불가")
-            logger.info(f"순위 조회 완료: 총 {total_count}개 행, 순위 발견: {success_count}개, 확인불가: {unavailable_count}개, 빈칸: {empty_count}개")
+            logger.info(f"✅ 순위 조회 완료: 총 {total_count}개 행, 순위 발견: {success_count}개, 확인불가: {unavailable_count}개, 빈칸: {empty_count}개")
             
-            # 5. J열에 순위 데이터 업데이트
+            # 4. J열에 순위 데이터 업데이트
+            logger.info("\n[4단계] J열에 순위 데이터 업데이트 시작...")
             self.update_ranks(ranks)
+            logger.info("✅ J열 업데이트 완료")
             
             logger.info("=" * 60)
             logger.info("Google Sheets 순위 업데이트 완료!")
@@ -567,13 +593,15 @@ async def insert_column_timestamp(request: Optional[SpreadsheetRequest] = None):
 
 @router.get("/update-ranks", response_model=UpdateRanksResponse)
 async def update_ranks_endpoint_get(
-    spreadsheet_id: Optional[str] = Query(None, description="Google 스프레드시트 ID (없으면 기본값 사용)")
+    spreadsheet_id: Optional[str] = Query(None, description="Google 스프레드시트 ID (없으면 기본값 사용)"),
+    insert_column_first: bool = Query(True, description="먼저 J열을 삽입할지 여부 (기본값: True)")
 ):
     """
     Google Sheets 순위 업데이트 (GET 요청)
     
+    - (옵션) J열 삽입 및 타임스탬프 기록
     - G열(키워드), H열(원부 nvmid), I열(가격비교 nvmid)을 읽습니다
-    - 네이버 API로 순위를 조회합니다
+    - 네이버 OpenAPI로 순위를 조회합니다 (가격비교 nvmid가 있으면 우선 사용)
     - J열에 순위 값을 업데이트합니다 (J7부터 2000행까지)
     
     사용법:
@@ -581,13 +609,15 @@ async def update_ranks_endpoint_get(
       =HYPERLINK("http://localhost:8001/api/google-sheets/update-ranks?spreadsheet_id=1aJzc2kw9dLghK-ltp7B0jyAQT7SjcgYRd0l0qOl1FmA", "순위 업데이트")
     - 또는 스프레드시트 ID를 셀에서 참조:
       =HYPERLINK("http://localhost:8001/api/google-sheets/update-ranks?spreadsheet_id=" & A1, "순위 업데이트")
+    - J열 삽입 없이 순위만 업데이트:
+      =HYPERLINK("http://localhost:8001/api/google-sheets/update-ranks?spreadsheet_id=...&insert_column_first=false", "순위만 업데이트")
     """
     try:
         if spreadsheet_id is None:
             spreadsheet_id = DEFAULT_SPREADSHEET_ID
         
         updater = GoogleSheetsRankUpdater(spreadsheet_id)
-        result = updater.update_all_ranks()
+        result = updater.update_all_ranks(insert_column_first=insert_column_first)
         
         return UpdateRanksResponse(
             success=True,
@@ -604,19 +634,23 @@ async def update_ranks_endpoint_get(
 
 
 @router.post("/update-ranks", response_model=UpdateRanksResponse)
-async def update_ranks_endpoint(request: Optional[SpreadsheetRequest] = None):
+async def update_ranks_endpoint(
+    request: Optional[SpreadsheetRequest] = None,
+    insert_column_first: bool = Query(True, description="먼저 J열을 삽입할지 여부 (기본값: True)")
+):
     """
     Google Sheets 순위 업데이트 (POST 요청)
     
+    - (옵션) J열 삽입 및 타임스탬프 기록
     - G열(키워드), H열(원부 nvmid), I열(가격비교 nvmid)을 읽습니다
-    - 네이버 API로 순위를 조회합니다
+    - 네이버 OpenAPI로 순위를 조회합니다 (가격비교 nvmid가 있으면 우선 사용)
     - J열에 순위 값을 업데이트합니다 (J7부터 2000행까지)
     """
     try:
         spreadsheet_id = request.spreadsheet_id if request and request.spreadsheet_id else DEFAULT_SPREADSHEET_ID
         
         updater = GoogleSheetsRankUpdater(spreadsheet_id)
-        result = updater.update_all_ranks()
+        result = updater.update_all_ranks(insert_column_first=insert_column_first)
         
         return UpdateRanksResponse(
             success=True,
@@ -630,3 +664,178 @@ async def update_ranks_endpoint(request: Optional[SpreadsheetRequest] = None):
     except Exception as e:
         logger.error(f"순위 업데이트 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def insert_api_link_to_sheet(
+    spreadsheet_id: str = None,
+    target_cell: str = "A1",
+    link_text: str = "API 실행",
+    api_endpoint: str = "insert-column-timestamp",
+    base_url: str = "http://localhost:8001"
+):
+    """
+    Google Sheets의 특정 셀에 API 링크를 삽입하는 함수 (Python 테스트용)
+    
+    Args:
+        spreadsheet_id: Google 스프레드시트 ID (None이면 기본값 사용)
+        target_cell: 링크를 삽입할 셀 위치 (예: 'A1', 'B2')
+        link_text: 링크에 표시될 텍스트
+        api_endpoint: API 엔드포인트 ('insert-column-timestamp' 또는 'update-ranks')
+        base_url: 기본 URL
+    
+    Returns:
+        dict: 결과 정보
+    """
+    try:
+        # 인증
+        if not os.path.exists(CREDENTIALS_FILE):
+            raise FileNotFoundError(f"인증 파일을 찾을 수 없습니다: {CREDENTIALS_FILE}")
+        
+        credentials = service_account.Credentials.from_service_account_file(
+            CREDENTIALS_FILE,
+            scopes=SCOPES
+        )
+        service = build('sheets', 'v4', credentials=credentials)
+        logger.info("Google Sheets API 인증 성공")
+        
+        # 스프레드시트 ID
+        if spreadsheet_id is None:
+            spreadsheet_id = DEFAULT_SPREADSHEET_ID
+        logger.info(f"스프레드시트 ID: {spreadsheet_id}")
+        
+        # API URL 생성
+        api_url = f"{base_url}/api/google-sheets/{api_endpoint}?spreadsheet_id={spreadsheet_id}"
+        logger.info(f"API URL: {api_url}")
+        
+        # HYPERLINK 함수 생성
+        hyperlink_formula = f'=HYPERLINK("{api_url}", "{link_text}")'
+        logger.info(f"HYPERLINK 함수: {hyperlink_formula}")
+        
+        # 셀 범위 생성 (시트 이름 포함)
+        cell_range = f"{SHEET_NAME}!{target_cell}"
+        logger.info(f"셀 범위: {cell_range}")
+        
+        # 셀에 링크 삽입 (USER_ENTERED 옵션으로 수식 삽입)
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=cell_range,
+            valueInputOption='USER_ENTERED',
+            body={
+                'values': [[hyperlink_formula]]
+            }
+        ).execute()
+        
+        logger.info(f"✅ 셀 {target_cell}에 API 링크 삽입 완료: {api_endpoint}")
+        
+        return {
+            'success': True,
+            'message': f'셀 {target_cell}에 API 링크 삽입 완료',
+            'cell': target_cell,
+            'api_url': api_url,
+            'link_text': link_text,
+            'spreadsheet_id': spreadsheet_id
+        }
+        
+    except HttpError as e:
+        logger.error(f"❌ API 링크 삽입 실패: {e}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"❌ API 링크 삽입 중 오류: {e}", exc_info=True)
+        raise
+
+
+# 파일을 직접 실행할 때 테스트용
+if __name__ == "__main__":
+    import sys
+    
+    logger.info("=" * 60)
+    logger.info("Google Sheets API 링크 삽입 테스트")
+    logger.info("=" * 60)
+    
+    # 명령줄 인자 처리
+    if len(sys.argv) < 2:
+        logger.info("\n사용법:")
+        logger.info("  python google_sheets_api.py <명령> [옵션]")
+        logger.info("\n명령:")
+        logger.info("  insert-link    - API 링크를 시트에 삽입")
+        logger.info("  insert-column  - J열 삽입 및 타임스탬프 기록")
+        logger.info("  update-ranks   - J열 삽입 후 순위 업데이트 (기본: J열 삽입 포함)")
+        logger.info("\n예시:")
+        logger.info("  python google_sheets_api.py insert-link A1 'J열 삽입' insert-column-timestamp")
+        logger.info("  python google_sheets_api.py insert-link A2 '순위 업데이트' update-ranks")
+        logger.info("  python google_sheets_api.py insert-column")
+        logger.info("  python google_sheets_api.py update-ranks")
+        logger.info("  python google_sheets_api.py update-ranks [스프레드시트ID] [insert_column_first]")
+        sys.exit(1)
+    
+    command = sys.argv[1]
+    
+    try:
+        if command == "insert-link":
+            # insert-link <셀위치> <링크텍스트> <API엔드포인트> [스프레드시트ID] [기본URL]
+            if len(sys.argv) < 5:
+                logger.error("❌ 인자가 부족합니다.")
+                logger.info("사용법: python google_sheets_api.py insert-link <셀위치> <링크텍스트> <API엔드포인트> [스프레드시트ID] [기본URL]")
+                logger.info("예시: python google_sheets_api.py insert-link A1 'J열 삽입' insert-column-timestamp")
+                sys.exit(1)
+            
+            target_cell = sys.argv[2]
+            link_text = sys.argv[3]
+            api_endpoint = sys.argv[4]
+            spreadsheet_id = sys.argv[5] if len(sys.argv) > 5 else None
+            base_url = sys.argv[6] if len(sys.argv) > 6 else "http://localhost:8001"
+            
+            result = insert_api_link_to_sheet(
+                spreadsheet_id=spreadsheet_id,
+                target_cell=target_cell,
+                link_text=link_text,
+                api_endpoint=api_endpoint,
+                base_url=base_url
+            )
+            
+            logger.info("\n" + "=" * 60)
+            logger.info("✅ 성공!")
+            logger.info(f"셀: {result['cell']}")
+            logger.info(f"링크 텍스트: {result['link_text']}")
+            logger.info(f"API URL: {result['api_url']}")
+            logger.info("=" * 60)
+            
+        elif command == "insert-column":
+            # insert-column [스프레드시트ID]
+            spreadsheet_id = sys.argv[2] if len(sys.argv) > 2 else None
+            
+            result = insert_j_column_and_timestamp(spreadsheet_id)
+            
+            logger.info("\n" + "=" * 60)
+            logger.info("✅ 성공!")
+            logger.info(f"타임스탬프: {result['timestamp']}")
+            logger.info(f"스프레드시트 ID: {result['spreadsheet_id']}")
+            logger.info("=" * 60)
+            
+        elif command == "update-ranks":
+            # update-ranks [스프레드시트ID] [insert_column_first]
+            spreadsheet_id = sys.argv[2] if len(sys.argv) > 2 else None
+            insert_column_first = sys.argv[3].lower() == 'true' if len(sys.argv) > 3 else True
+            
+            if spreadsheet_id is None:
+                spreadsheet_id = DEFAULT_SPREADSHEET_ID
+            
+            updater = GoogleSheetsRankUpdater(spreadsheet_id)
+            result = updater.update_all_ranks(insert_column_first=insert_column_first)
+            
+            logger.info("\n" + "=" * 60)
+            logger.info("✅ 성공!")
+            logger.info(f"총 행 수: {result['total_rows']}")
+            logger.info(f"순위 발견: {result['success_count']}개")
+            logger.info(f"확인불가: {result['unavailable_count']}개")
+            logger.info(f"빈칸: {result['empty_count']}개")
+            logger.info(f"스프레드시트 ID: {spreadsheet_id}")
+            logger.info("=" * 60)
+            
+        else:
+            logger.error(f"❌ 알 수 없는 명령: {command}")
+            sys.exit(1)
+            
+    except Exception as e:
+        logger.error(f"❌ 실행 중 오류 발생: {e}", exc_info=True)
+        sys.exit(1)
