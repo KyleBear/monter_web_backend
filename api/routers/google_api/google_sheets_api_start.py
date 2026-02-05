@@ -11,8 +11,6 @@ import logging
 import re
 from typing import List, Optional, Dict, Union
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
 
 # 프로젝트 루트를 Python 경로에 추가 (직접 실행 시)
 current_file = os.path.abspath(__file__)
@@ -25,7 +23,6 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.requests import Request
 from pydantic import BaseModel
 
 # 네이버 API 함수 import (crol.py에서)
@@ -369,8 +366,8 @@ class GoogleSheetsRankUpdater:
                             logger.info(f"OpenAPI 순위 매칭 성공: keyword='{keyword}', nvmid='{target_nvmid}', rank={rank}")
                             return rank
                     
-                    # API 호출 간격 (3초)
-                    time.sleep(3.0)
+                    # API 호출 간격
+                    time.sleep(0.2)
                     
                 except Exception as e:
                     logger.error(f"페이지 {page} 조회 중 오류: {e}", exc_info=True)
@@ -477,35 +474,16 @@ class GoogleSheetsRankUpdater:
                     'empty_count': 0
                 }
             
-            # 2. 각 행에 대해 순위 조회 (병렬 처리)
-            logger.info("\n[3단계] 순위 조회 시작 (병렬 처리)...")
+            # 2. 각 행에 대해 순위 조회
+            logger.info("\n[3단계] 순위 조회 시작...")
+            ranks = []
             total_count = len(input_data)
-            ranks = [None] * total_count  # 결과를 저장할 리스트 (인덱스 순서 유지)
-            
-            # 통계를 위한 락
-            stats_lock = Lock()
             success_count = 0
             empty_count = 0
             
-            logger.info(f"총 {total_count}개 행의 순위 조회 시작 (병렬 처리, API 간격: 3초)...")
+            logger.info(f"총 {total_count}개 행의 순위 조회 시작...")
             
-            def process_single_rank(idx: int, data: Dict) -> tuple:
-                """
-                단일 행의 순위를 조회하는 함수
-                
-                Args:
-                    idx: 인덱스 (0부터 시작)
-                    data: {'keyword': str, 'nvmid': str, 'price_nvmid': str or None}
-                
-                Returns:
-                    (idx, rank): 인덱스와 순위 결과
-                """
-                # 각 작업이 시작될 때 3초 간격을 두기 위해 지연
-                # 첫 번째 작업은 즉시 시작, 두 번째는 3초 후, 세 번째는 6초 후...
-                delay = idx * 3.0
-                if delay > 0:
-                    time.sleep(delay)
-                
+            for idx, data in enumerate(input_data, 1):
                 keyword = data['keyword']
                 nvmid = data['nvmid']
                 price_nvmid = data['price_nvmid']
@@ -513,51 +491,25 @@ class GoogleSheetsRankUpdater:
                 # 키워드와 nvmid가 모두 있어야 조회
                 if keyword and nvmid:
                     rank = self.get_rank_by_naver_api(keyword, nvmid, price_nvmid)
+                    ranks.append(rank)
                     
-                    # 통계 업데이트 (스레드 안전)
-                    with stats_lock:
-                        nonlocal success_count, empty_count
-                        if rank and isinstance(rank, int):
-                            success_count += 1
-                        elif rank == "확인불가":
-                            pass  # 확인불가는 별도 카운트
-                        else:
-                            empty_count += 1
-                    
-                    return (idx, rank)
+                    if rank and isinstance(rank, int):
+                        success_count += 1
+                        if idx % 100 == 0:
+                            logger.info(f"[진행상황] {idx}/{total_count} 행 처리 완료 (순위 발견: {success_count}개)")
+                    elif rank == "확인불가":
+                        # 확인불가는 empty_count에 포함하지 않음 (별도 카운트)
+                        pass
+                    else:
+                        empty_count += 1
                 else:
                     # 키워드 또는 nvmid가 없으면 빈칸
-                    with stats_lock:
-                        empty_count += 1
-                    return (idx, None)
-            
-            # 병렬 처리 실행
-            max_workers = min(10, total_count)  # 최대 10개의 워커 스레드 사용
-            completed = 0
-            
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # 모든 작업 제출
-                future_to_idx = {
-                    executor.submit(process_single_rank, idx, data): idx 
-                    for idx, data in enumerate(input_data)
-                }
+                    ranks.append(None)
+                    empty_count += 1
                 
-                # 완료된 작업 처리
-                for future in as_completed(future_to_idx):
-                    try:
-                        idx, rank = future.result()
-                        ranks[idx] = rank
-                        completed += 1
-                        
-                        # 진행 상황 로깅 (100개마다)
-                        if completed % 100 == 0:
-                            with stats_lock:
-                                logger.info(f"[진행상황] {completed}/{total_count} 행 처리 완료 (순위 발견: {success_count}개)")
-                    except Exception as e:
-                        idx = future_to_idx[future]
-                        logger.error(f"행 {idx+1} 처리 중 오류: {e}", exc_info=True)
-                        ranks[idx] = None
-                        completed += 1
+                # API 호출 간격 (너무 빠르면 제한될 수 있음)
+                if idx % 10 == 0:
+                    time.sleep(0.5)
             
             # "확인불가" 개수도 카운트
             unavailable_count = sum(1 for r in ranks if r == "확인불가")
@@ -712,179 +664,6 @@ async def update_ranks_endpoint(
     except Exception as e:
         logger.error(f"순위 업데이트 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-
-class InsertLinkRequest(BaseModel):
-    spreadsheet_id: Optional[str] = None
-    target_cell: str = "A1"
-    link_text: str = "API 실행"
-    api_endpoint: str = "update-ranks"
-    base_url: Optional[str] = None
-
-
-class InsertLinkResponse(BaseModel):
-    success: bool
-    message: str
-    cell: str
-    api_url: str
-    link_text: str
-    spreadsheet_id: str
-
-
-@router.post("/insert-link", response_model=InsertLinkResponse)
-async def insert_link_endpoint(
-    request: InsertLinkRequest,
-    req: Request = None
-):
-    """
-    Google Sheets의 특정 셀에 API 링크를 삽입합니다 (POST 요청)
-    
-    - 지정한 셀에 HYPERLINK 함수를 사용하여 API 링크를 삽입합니다.
-    - 사용자가 링크를 더블클릭하면 해당 API가 실행됩니다.
-    
-    사용 예시:
-    POST /api/google-sheets/insert-link
-    {
-        "spreadsheet_id": "1aJzc2kw9dLghK-ltp7B0jyAQT7SjcgYRd0l0qOl1FmA",
-        "target_cell": "A1",
-        "link_text": "순위 업데이트",
-        "api_endpoint": "update-ranks"
-    }
-    """
-    try:
-        # base_url이 없으면 Request에서 가져오기
-        if request.base_url is None and req:
-            base_url = f"{req.url.scheme}://{req.url.hostname}"
-            if req.url.port:
-                base_url += f":{req.url.port}"
-        elif request.base_url:
-            base_url = request.base_url
-        else:
-            # 환경변수에서 가져오기
-            base_url = os.getenv('GOOGLE_SHEETS_API_BASE_URL', 'http://localhost:8001')
-        
-        result = insert_api_link_to_sheet(
-            spreadsheet_id=request.spreadsheet_id,
-            target_cell=request.target_cell,
-            link_text=request.link_text,
-            api_endpoint=request.api_endpoint,
-            base_url=base_url
-        )
-        
-        return InsertLinkResponse(
-            success=result['success'],
-            message=result['message'],
-            cell=result['cell'],
-            api_url=result['api_url'],
-            link_text=result['link_text'],
-            spreadsheet_id=result['spreadsheet_id']
-        )
-    except Exception as e:
-        logger.error(f"API 링크 삽입 실패: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/insert-link", response_model=InsertLinkResponse)
-async def insert_link_endpoint_get(
-    spreadsheet_id: Optional[str] = Query(None, description="Google 스프레드시트 ID"),
-    target_cell: str = Query("A1", description="링크를 삽입할 셀 위치"),
-    link_text: str = Query("순위 업데이트", description="링크에 표시될 텍스트"),
-    api_endpoint: str = Query("update-ranks", description="API 엔드포인트 ('insert-column-timestamp' 또는 'update-ranks')"),
-    base_url: Optional[str] = Query(None, description="기본 URL (없으면 자동 감지)"),
-    req: Request = None
-):
-    """
-    Google Sheets의 특정 셀에 API 링크를 삽입합니다 (GET 요청)
-    
-    사용 예시:
-    GET /api/google-sheets/insert-link?target_cell=A1&link_text=순위 업데이트&api_endpoint=update-ranks
-    """
-    try:
-        # base_url이 없으면 Request에서 가져오기
-        if base_url is None and req:
-            base_url = f"{req.url.scheme}://{req.url.hostname}"
-            if req.url.port:
-                base_url += f":{req.url.port}"
-        elif base_url is None:
-            # 환경변수에서 가져오기
-            base_url = os.getenv('GOOGLE_SHEETS_API_BASE_URL', 'http://localhost:8001')
-        
-        result = insert_api_link_to_sheet(
-            spreadsheet_id=spreadsheet_id,
-            target_cell=target_cell,
-            link_text=link_text,
-            api_endpoint=api_endpoint,
-            base_url=base_url
-        )
-        
-        return InsertLinkResponse(
-            success=result['success'],
-            message=result['message'],
-            cell=result['cell'],
-            api_url=result['api_url'],
-            link_text=result['link_text'],
-            spreadsheet_id=result['spreadsheet_id']
-        )
-    except Exception as e:
-        logger.error(f"API 링크 삽입 실패: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/setup-update-link")
-async def setup_update_link_endpoint(
-    spreadsheet_id: Optional[str] = Query(None, description="Google 스프레드시트 ID"),
-    target_cell: str = Query("A1", description="링크를 삽입할 셀 위치"),
-    req: Request = None
-):
-    """
-    순위 업데이트 API 링크를 시트에 삽입하는 편의 엔드포인트
-    
-    사용 예시:
-    POST /api/google-sheets/setup-update-link?target_cell=A1
-    """
-    try:
-        # base_url이 없으면 Request에서 가져오기
-        if req:
-            base_url = f"{req.url.scheme}://{req.url.hostname}"
-            if req.url.port:
-                base_url += f":{req.url.port}"
-        else:
-            base_url = os.getenv('GOOGLE_SHEETS_API_BASE_URL', 'http://localhost:8001')
-        
-        result = insert_api_link_to_sheet(
-            spreadsheet_id=spreadsheet_id,
-            target_cell=target_cell,
-            link_text="순위 업데이트",
-            api_endpoint="update-ranks",
-            base_url=base_url
-        )
-        
-        return InsertLinkResponse(
-            success=result['success'],
-            message=result['message'],
-            cell=result['cell'],
-            api_url=result['api_url'],
-            link_text=result['link_text'],
-            spreadsheet_id=result['spreadsheet_id']
-        )
-    except Exception as e:
-        logger.error(f"API 링크 삽입 실패: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/setup-update-link")
-async def setup_update_link_endpoint_get(
-    spreadsheet_id: Optional[str] = Query(None, description="Google 스프레드시트 ID"),
-    target_cell: str = Query("A1", description="링크를 삽입할 셀 위치"),
-    req: Request = None
-):
-    """
-    순위 업데이트 API 링크를 시트에 삽입하는 편의 엔드포인트 (GET)
-    
-    사용 예시:
-    GET /api/google-sheets/setup-update-link?target_cell=A1
-    """
-    return await setup_update_link_endpoint(spreadsheet_id, target_cell, req)
 
 
 def insert_api_link_to_sheet(
