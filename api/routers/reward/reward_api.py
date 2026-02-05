@@ -298,11 +298,15 @@ def _reward_rank_to_dict(reward_rank: RewardRank) -> dict:
         "product_url": reward_rank.product_url,
         "image_url": reward_rank.image_url,
         "image_tag": reward_rank.image_tag,
-        "nvmid": reward_rank.nvmid,
+        "nvmid": reward_rank.nvmid,        
         "is_shopping_exposed": reward_rank.is_shopping_exposed,
         "cpc": reward_rank.cpc,
         "mnc_idx": reward_rank.mnc_idx,
         "signature": reward_rank.signature,
+        "mnc_limitcnt": reward_rank.mnc_limitcnt,
+        "mnc_mission_starttime": reward_rank.mnc_mission_starttime.isoformat() if reward_rank.mnc_mission_starttime else None,
+        "mnc_mission_endtime": reward_rank.mnc_mission_endtime.isoformat() if reward_rank.mnc_mission_endtime else None,
+        "price": reward_rank.price,
         "created_at": reward_rank.created_at.isoformat() if reward_rank.created_at else None,
         "updated_at": reward_rank.updated_at.isoformat() if reward_rank.updated_at else None,
     }
@@ -374,56 +378,101 @@ async def _register_single_mission(reward_rank: RewardRank, db: Session) -> dict
     before_data = _reward_rank_to_dict(reward_rank)
     
     # 고정값 설정
-    mnc_type = "answer"
+    # mnc_type = "answer"
+    mnc_type = "sharing"
     mnc_ans_type = "answer"
     # mnc_title = f"몽테르 미션 {reward_rank.reward_id}"
     mnc_title = f"테스트 미션 [참여금지]"
-    mnc_limitcnt = 1000
-    mnc_mission_starttime = "2026-02-02"
-    mnc_mission_endtime = "2026-02-27"
+    # mnc_title = f"몽테르 라봉홈 미션 "
+    store_name = reward_rank.store_name or ""
+    keyword = reward_rank.keyword or ""
+    mnc_title = f"{store_name} {keyword} 미션".strip()
+    # 컬럼에서 읽기 (없으면 기본값 사용)
+    mnc_limitcnt = reward_rank.mnc_limitcnt if reward_rank.mnc_limitcnt is not None else 0
+    mnc_mission_starttime = reward_rank.mnc_mission_starttime.strftime("%Y-%m-%d") if reward_rank.mnc_mission_starttime else "2026-02-02"
+    mnc_mission_endtime = reward_rank.mnc_mission_endtime.strftime("%Y-%m-%d") if reward_rank.mnc_mission_endtime else "2026-02-27"
+    
     ma_btype1 = "chrome"
     mnc_description = "상품번호를 맞추고 리워드를 가져가세요"
     # RewardRank에서 데이터 가져오기
     ma_keyword1 = reward_rank.keyword or ""
-    ma_reginum1 = str(reward_rank.reward_id)
-    ma_link1 = reward_rank.product_url or ""
-    ma_answer1 = reward_rank.nvmid or ""
-    ma_answer_ios1 = reward_rank.nvmid or ""
+    # ma_reginum1 = str(reward_rank.reward_id)
+    # ma_link1 = "https://m.naver.com"  # 머니닷 진입경로
+    ma_link1 = reward_rank.search_url or ""
+    # ma_answer1 = reward_rank.nvmid or ""
+    # ma_answer_ios1 = reward_rank.nvmid or ""
+    ma_answer1 = reward_rank.productid or ""
+    ma_answer_ios1 = reward_rank.productid or ""
     
-    # 관리자 메모 생성 (유입 메모)
+    # 관리자 메모 생성 (유입 메모 + limitcnt + 업데이트 날짜)
     agency = "몽테르|리워드"
     m_type = "네이버쇼핑-트래픽"
     code = reward_rank.productid or ""
     mid = reward_rank.nvmid or ""
+    productid = reward_rank.productid or ""
     product_name = reward_rank.product_name or ""
     
-    mnc_memo = f"{{agency: {agency}, m_type: {m_type}, code: {code}, mid: {mid}, product_name: {product_name}}}"
+    # 현재 날짜 (MM.DD 형식)
+    kst = timezone(timedelta(hours=9))
+    current_date = datetime.now(kst).strftime("%m.%d")
+    
+    # memo 형식: {agency: ..., m_type: ..., code: ..., mid: ..., product_name: ...} {mnc_limitcnt}유입 MM.DD
+    mnc_memo = f"{{agency: {agency}, m_type: {m_type}, code: {code}, mid: {mid}, product_name: {product_name}}} {mnc_limitcnt}유입 {current_date}"
+    
+    # ma_hints1 하드코딩 데이터
+    product_id_for_hint = reward_rank.productid or "OOOOOOOOOO"
+    product_name_for_hint = reward_rank.product_name or ""
+    store_name_for_hint = reward_rank.store_name or ""
+    price_info = str(reward_rank.price) if reward_rank.price is not None else ""
+    
+    # 기존 힌트 문구
+    existing_hint = f"""※ 미션 시작 시 검색어가 자동 복사됩니다.
+[검색창에 붙여넣기 후 진행해주세요.]
+1. 힌트 이미지를 참고하여 제품을 찾아 클릭합니다.
+2. 스크롤을 내려 하단에 [구매 추가정보]를 클릭합니다.
+3. 상품번호 OOOOOOOO 전체를 복사합니다. 
+4. 머니닷 앱으로 돌아와 정답을 입력합니다."""
+    
+    # 새로운 형식
+    ma_hints1 = f"""
+
+{product_name_for_hint}
+
+{store_name_for_hint} | {price_info}원
+
+{existing_hint}
+
+"""
     
     # 파일 데이터 준비
     files = {}
     
-    # 이미지 다운로드
+    # mnc_img를 money_dotimg.jpg로 고정
+    money_dot_img_path = os.path.join(os.path.dirname(__file__), "money_dotimg.jpg")
+    if os.path.exists(money_dot_img_path):
+        with open(money_dot_img_path, "rb") as f:
+            image_data = f.read()
+        files["mnc_img"] = (
+            "mnc_img.jpg",
+            io.BytesIO(image_data),
+            "image/jpeg"
+        )
+    
+    # 힌트 이미지는 reward_rank.image_url에서 다운로드 (기존 로직 유지)
     if reward_rank.image_url:
-        image_data = download_image_from_url(reward_rank.image_url)
-        if image_data:
+        hint_image_data = download_image_from_url(reward_rank.image_url)
+        if hint_image_data:
             file_ext = "jpg"
             if reward_rank.image_url.lower().endswith(('.png', '.gif')):
                 file_ext = reward_rank.image_url.split('.')[-1].lower()
             
-            files["mnc_img"] = (
-                f"mnc_img.{file_ext}",
-                io.BytesIO(image_data),
-                f"image/{file_ext}"
-            )
-            
             files["ma_img1"] = (
                 f"ma_img1.{file_ext}",
-                io.BytesIO(image_data),
+                io.BytesIO(hint_image_data),
                 f"image/{file_ext}"
             )
     
     # 타임스탬프 생성
-    kst = timezone(timedelta(hours=9))
     kst_now = datetime.now(kst)
     timestamp_int = int(kst_now.timestamp())
     timestamp_str = str(timestamp_int)
@@ -444,19 +493,26 @@ async def _register_single_mission(reward_rank: RewardRank, db: Session) -> dict
         "mnc_type": str(mnc_type),
         "mnc_ans_type": str(mnc_ans_type),
         "mnc_title": str(mnc_title),
-        "mnc_point": int(0),
         "mnc_limitcnt": int(mnc_limitcnt),
         "mnc_mission_starttime": str(mnc_mission_starttime),
         "mnc_mission_endtime": str(mnc_mission_endtime),
         "mnc_memo": str(mnc_memo),
         "ma_keyword1": str(ma_keyword1) if ma_keyword1 else "",
-        "ma_reginum1": str(ma_reginum1) if ma_reginum1 else "",
+        # "ma_reginum1": str(ma_reginum1) if ma_reginum1 else "",
         "ma_btype1": str(ma_btype1),
         "ma_link1": str(ma_link1) if ma_link1 else "",
         "ma_answer1": str(ma_answer1) if ma_answer1 else "",
         "ma_answer_ios1": str(ma_answer_ios1) if ma_answer_ios1 else "",
+        "ma_hints1": str(ma_hints1),
         "mnc_description": str(mnc_description),
     }
+    
+    # ma_hints1 전송 확인 로그
+    logger.info(f"[ma_hints1 전송 확인] ma_hints1 길이: {len(ma_hints1)} 문자")
+    logger.info(f"[ma_hints1 전송 확인] ma_hints1 내용 (처음 200자): {ma_hints1[:200]}")
+    print(f"[ma_hints1 전송 확인] ma_hints1 길이: {len(ma_hints1)} 문자")
+    print(f"[ma_hints1 전송 확인] ma_hints1 내용 (처음 200자): {ma_hints1[:200]}")
+    print(f"[ma_hints1 전송 확인] form_data에 포함 여부: {'ma_hints1' in form_data}")
     
     # PRD 서버로 요청 전송
     result = send_request_to_prd_server(
@@ -688,65 +744,104 @@ async def register_mission(
                 }
             )
         #Todo: 테스트 미션 [참여금지] 미션 등록 처리
-        #TodoL starttime end time 동적 처리, limitcnt 처리
         # 고정값 설정
         mnc_type = "answer"
         mnc_ans_type = "answer"
         # mnc_title = f"몽테르 미션 {request.reward_id}"
-        mnc_title = f"테스트 미션 [참여금지]"
-        mnc_limitcnt = 1000
-        mnc_mission_starttime = "2026-02-02"
-        mnc_mission_endtime = "2026-02-27"
+        # mnc_title = f"몽테르 라봉홈 미션 "
+        store_name = reward_rank.store_name or ""
+        keyword = reward_rank.keyword or ""
+        mnc_title = f"{store_name} {keyword} 미션".strip()        
+        # 컬럼에서 읽기 (없으면 기본값 사용)
+        mnc_limitcnt = reward_rank.mnc_limitcnt if reward_rank.mnc_limitcnt is not None else 1000
+        mnc_mission_starttime = reward_rank.mnc_mission_starttime.strftime("%Y-%m-%d") if reward_rank.mnc_mission_starttime else "2026-02-02"
+        mnc_mission_endtime = reward_rank.mnc_mission_endtime.strftime("%Y-%m-%d") if reward_rank.mnc_mission_endtime else "2026-02-27"
+        
         ma_btype1 = "chrome"
         mnc_description = "상품번호를 맞추고 리워드를 가져가세요"
         
         # RewardRank에서 데이터 가져오기
         ma_keyword1 = reward_rank.keyword or ""  # ma_keyword 컬럼이 없으므로 keyword 사용
-        ma_reginum1 = str(reward_rank.reward_id)
-        ma_link1 = reward_rank.product_url or ""
-        ma_answer1 = reward_rank.nvmid or ""
-        ma_answer_ios1 = reward_rank.nvmid or ""
+        # ma_reginum1 = str(reward_rank.reward_id)
+        ma_link1 = "https://m.naver.com"  # 하드코딩 고정
+        ma_link1 = reward_rank.search_url or ""
+        # ma_answer1 = reward_rank.nvmid or ""
+        # ma_answer_ios1 = reward_rank.nvmid or ""
+        ma_answer1 = reward_rank.productid or ""
+        ma_answer_ios1 = reward_rank.productid or ""
         
-        # 관리자 메모 생성 (유입 메모)
-        # 형식: {agency: 몽테르|리워드, m_type: 네이버쇼핑-트래픽, code: {code}, mid: {mid}, product_name: {product_name}}
+        # 관리자 메모 생성 (유입 메모 + limitcnt + 업데이트 날짜)
+        # 형식: {agency: 몽테르|리워드, m_type: 네이버쇼핑-트래픽, code: {code}, mid: {mid}, product_name: {product_name}} {mnc_limitcnt}유입 MM.DD
         agency = "몽테르|리워드"
         m_type = "네이버쇼핑-트래픽"
         code = reward_rank.productid or ""  # productid를 code로 사용
         mid = reward_rank.nvmid or ""
         product_name = reward_rank.product_name or ""
         
-        mnc_memo = f"{{agency: {agency}, m_type: {m_type}, code: {code}, mid: {mid}, product_name: {product_name}}}"
+        # 현재 날짜 (MM.DD 형식)
+        kst = timezone(timedelta(hours=9))
+        current_date = datetime.now(kst).strftime("%m.%d")
+        
+        # memo 형식: {agency: ..., m_type: ..., code: ..., mid: ..., product_name: ...} {mnc_limitcnt}유입 MM.DD
+        mnc_memo = f"{{agency: {agency}, m_type: {m_type}, code: monteur|{code}, mid: {mid}, product_name: {product_name}}} {mnc_limitcnt}유입 {current_date}"
+        
+        # ma_hints1 하드코딩 데이터
+        product_id_for_hint = reward_rank.productid or "OOOOOOOOOO"
+        product_name_for_hint = reward_rank.product_name or ""
+        store_name_for_hint = reward_rank.store_name or ""
+        price_info = str(reward_rank.price) if reward_rank.price is not None else ""
+        
+        # 기존 힌트 문구
+        existing_hint = f"""※ 미션 시작 시 검색어가 자동 복사됩니다.
+[검색창에 붙여넣기 후 진행해주세요.]
+1. 힌트 이미지를 참고하여 제품을 찾아 클릭합니다.
+2. 스크롤을 내려 하단에 [구매 추가정보]를 클릭합니다.
+3. 상품번호 {product_id_for_hint} 전체를 복사합니다. 
+4. 머니닷 앱으로 돌아와 정답을 입력합니다."""
+        
+        # 새로운 형식
+        ma_hints1 = f"""
+
+{product_name_for_hint}
+
+{store_name_for_hint} | {price_info}
+
+{existing_hint}
+"""
         
         # 파일 데이터 준비
         files = {}
         
-        # 이미지 다운로드 (메인 이미지와 힌트 이미지가 동일하므로 한 번만 다운로드)
+        # mnc_img를 money_dotimg.jpg로 고정
+        money_dot_img_path = os.path.join(os.path.dirname(__file__), "money_dotimg.jpg")
+        if os.path.exists(money_dot_img_path):
+            with open(money_dot_img_path, "rb") as f:
+                image_data = f.read()
+            files["mnc_img"] = (
+                "mnc_img.jpg",
+                io.BytesIO(image_data),
+                "image/jpeg"
+            )
+        
+        # 힌트 이미지는 reward_rank.image_url에서 다운로드 (기존 로직 유지)
         if reward_rank.image_url:
-            image_data = download_image_from_url(reward_rank.image_url)
-            if image_data:
+            hint_image_data = download_image_from_url(reward_rank.image_url)
+            if hint_image_data:
                 # 파일 확장자 추출
                 file_ext = "jpg"  # 기본값
                 if reward_rank.image_url.lower().endswith(('.png', '.gif')):
                     file_ext = reward_rank.image_url.split('.')[-1].lower()
                 
-                # 메인 이미지 (mnc_img) - 별도의 BytesIO 객체 생성
-                files["mnc_img"] = (
-                    f"mnc_img.{file_ext}",
-                    io.BytesIO(image_data),
-                    f"image/{file_ext}"
-                )
-                
-                # 힌트 이미지 (ma_img1) - 별도의 BytesIO 객체 생성 (같은 데이터지만 별도 객체)
+                # 힌트 이미지 (ma_img1)
                 files["ma_img1"] = (
                     f"ma_img1.{file_ext}",
-                    io.BytesIO(image_data),
+                    io.BytesIO(hint_image_data),
                     f"image/{file_ext}"
                 )
         
         # 외부 API 요청 직전에 타임스탬프와 서명 재생성 (현재 시간 사용)
         # Unix timestamp (integer) - 현재 시간 기준 5분 이내
         # 한국 시간(KST, UTC+9) 기준으로 Unix timestamp 생성 (정수형)
-        kst = timezone(timedelta(hours=9))
         kst_now = datetime.now(kst)
         timestamp_int = int(kst_now.timestamp())
         timestamp_str = str(timestamp_int)  # 서명 생성용 문자열
@@ -776,17 +871,17 @@ async def register_mission(
             "mnc_type": str(mnc_type),
             "mnc_ans_type": str(mnc_ans_type),
             "mnc_title": str(mnc_title),
-            "mnc_point": int(0),  # integer로 명시적 변환
             "mnc_limitcnt": int(mnc_limitcnt),  # integer로 명시적 변환
             "mnc_mission_starttime": str(mnc_mission_starttime),
             "mnc_mission_endtime": str(mnc_mission_endtime),
             "mnc_memo": str(mnc_memo),
             "ma_keyword1": str(ma_keyword1) if ma_keyword1 else "",
-            "ma_reginum1": str(ma_reginum1) if ma_reginum1 else "",
+            # "ma_reginum1": str(ma_reginum1) if ma_reginum1 else "",
             "ma_btype1": str(ma_btype1),
             "ma_link1": str(ma_link1) if ma_link1 else "",
             "ma_answer1": str(ma_answer1) if ma_answer1 else "",
             "ma_answer_ios1": str(ma_answer_ios1) if ma_answer_ios1 else "",
+            "ma_hints1": str(ma_hints1),
             "mnc_description": str(mnc_description),
         }
         
@@ -794,6 +889,13 @@ async def register_mission(
         logger.info(f"[전송 데이터 전체] form_data: {json.dumps(form_data, indent=2, ensure_ascii=False, default=str)}")
         print(f"[전송 데이터 전체] form_data:")
         print(json.dumps(form_data, indent=2, ensure_ascii=False, default=str))
+        
+        # ma_hints1 전송 확인 로그
+        logger.info(f"[ma_hints1 전송 확인] ma_hints1 길이: {len(ma_hints1)} 문자")
+        logger.info(f"[ma_hints1 전송 확인] ma_hints1 내용 (처음 200자): {ma_hints1[:200]}")
+        print(f"[ma_hints1 전송 확인] ma_hints1 길이: {len(ma_hints1)} 문자")
+        print(f"[ma_hints1 전송 확인] ma_hints1 내용 (처음 200자): {ma_hints1[:200]}")
+        print(f"[ma_hints1 전송 확인] form_data에 포함 여부: {'ma_hints1' in form_data}")
         
         # 전송되는 timestamp 값 확인 (integer 타입 확인)
         timestamp_value = form_data["timestamp"]
@@ -1038,7 +1140,7 @@ async def update_mission(
         
         # RewardRank에서 추가 데이터 가져오기 (reward_rank가 있는 경우)
         ma_keyword1 = ""
-        ma_reginum1 = ""
+        # ma_reginum1 = ""
         ma_link1 = ""
         ma_answer1 = ""
         ma_answer_ios1 = ""
@@ -1047,10 +1149,12 @@ async def update_mission(
         
         if reward_rank:
             ma_keyword1 = reward_rank.keyword or ""
-            ma_reginum1 = str(reward_rank.reward_id)
+            # ma_reginum1 = str(reward_rank.reward_id)
             ma_link1 = reward_rank.product_url or ""
-            ma_answer1 = reward_rank.nvmid or ""
-            ma_answer_ios1 = reward_rank.nvmid or ""
+            # ma_answer1 = reward_rank.nvmid or ""
+            # ma_answer_ios1 = reward_rank.nvmid or ""
+            ma_answer1 = reward_rank.productid or ""
+            ma_answer_ios1 = reward_rank.productid or ""
             ma_btype1 = "chrome"
             
             # 관리자 메모 생성
@@ -1059,7 +1163,7 @@ async def update_mission(
             code = reward_rank.productid or ""
             mid = reward_rank.nvmid or ""
             product_name = reward_rank.product_name or ""
-            mnc_memo = f"{{agency: {agency}, m_type: {m_type}, code: {code}, mid: {mid}, product_name: {product_name}}}"
+            mnc_memo = f"{{agency: {agency}, m_type: {m_type}, code: {code} | {ma_answer1}, mid: {mid}, product_name: {product_name}}}"
         
         # 파일 데이터 준비
         files = {}
@@ -1147,8 +1251,8 @@ async def update_mission(
         if reward_rank:
             if ma_keyword1:
                 form_data["ma_keyword1"] = str(ma_keyword1)
-            if ma_reginum1:
-                form_data["ma_reginum1"] = str(ma_reginum1)
+            # if ma_reginum1:
+            #     form_data["ma_reginum1"] = str(ma_reginum1)
             if ma_link1:
                 form_data["ma_link1"] = str(ma_link1)
             if ma_answer1:

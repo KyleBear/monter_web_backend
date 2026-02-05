@@ -54,7 +54,8 @@ def get_product_info_by_keyword_and_nvmid(keyword: str, nvmid: str) -> Optional[
             'product_url': str,
             'store_name': str,
             'product_name': str,
-            'product_id': str  # 추가
+            'product_id': str,
+            'image_url': str  # 이미지 URL
         } 또는 None
     """
     if not keyword or not nvmid:
@@ -176,6 +177,7 @@ def get_product_info_by_keyword_and_nvmid(keyword: str, nvmid: str) -> Optional[
                         product_url = link if link else None
                         store_name = item.get("mall_name", "") or item.get("mallName", "")
                         product_name = item.get("product_name", "") or item.get("title", "")
+                        image_url = item.get("image", "")  # 이미지 URL
                         
                         # HTML 태그 제거
                         if product_name:
@@ -192,7 +194,8 @@ def get_product_info_by_keyword_and_nvmid(keyword: str, nvmid: str) -> Optional[
                             'product_url': product_url,
                             'store_name': store_name,
                             'product_name': product_name,
-                            'product_id': product_id_from_link  # link에서 추출한 product_id
+                            'product_id': product_id_from_link,  # link에서 추출한 product_id
+                            'image_url': image_url  # 이미지 URL
                         }
                 
                 # 마지막 페이지면 중단
@@ -259,6 +262,7 @@ async def process_single_record(record: RewardRank) -> Dict:
                 updated_fields = []
                 
                 # product_url 업데이트
+                # 나중에 사용자 입력필드로전환.
                 if product_info.get('product_url'):
                     if record.product_url != product_info['product_url']:
                         record.product_url = product_info['product_url']
@@ -269,7 +273,7 @@ async def process_single_record(record: RewardRank) -> Dict:
                     if record.store_name != product_info['store_name']:
                         record.store_name = product_info['store_name']
                         updated_fields.append('store_name')
-                
+                # To DO 만약 찾지 못하면 사용자입력필드로 바꾸는 방어로직도.. 고려.
                 # product_name 업데이트
                 if product_info.get('product_name'):
                     if record.product_name != product_info['product_name']:
@@ -281,6 +285,12 @@ async def process_single_record(record: RewardRank) -> Dict:
                     if record.productid != product_info['product_id']:
                         record.productid = product_info['product_id']
                         updated_fields.append('productid')
+                
+                # image_url 업데이트
+                if product_info.get('image_url'):
+                    if record.image_url != product_info['image_url']:
+                        record.image_url = product_info['image_url']
+                        updated_fields.append('image_url')
                 
                 if updated_fields:
                     record.updated_at = datetime.now()

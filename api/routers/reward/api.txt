@@ -1,3 +1,4 @@
+백엔드: reward_target을 읽어 키워드 API로 정보 추출 → reward_rank에 저장
 
 핵심테이블 = reward_rank 테이블
 
@@ -9,8 +10,10 @@ product_url, 스토어명, product_name 을 업데이트치는 파이썬 파일�
 
 그다음 이미지 + 태그를 가져오는 파일 (exe 파일)
 
-
-
 관리 API - reward_api
 
 이력 테이블 (CRUD 관리)
+
+키워드 + nvmid 로 -> image_url + productname, product_id 업데이트 추출. - reward_rank 업데이트 (input_output 모두 업데이트)
+input 한 product_url mall name 가져온 후 tag 및 가격 업데이트, 
+리워드에 리워드 랭크 모두 등록후 token 발행 및 idx 등록

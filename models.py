@@ -278,6 +278,10 @@ class RewardRank(Base):
     cpc = Column(Boolean, default=False, comment='CPC 여부 (boolean)')
     mnc_idx = Column(Integer, nullable=True, comment='외부 파트너사 미션 IDX')
     signature = Column(String(255), nullable=True, comment='미션 등록 시 생성된 서명')
+    mnc_limitcnt = Column(Integer, nullable=True, comment='미션 최대 참여 인원수')
+    mnc_mission_starttime = Column(Date, nullable=True, comment='미션 시작일')
+    mnc_mission_endtime = Column(Date, nullable=True, comment='미션 종료일')
+    price = Column(Integer, nullable=True, comment='상품 가격')
 
 
 # 리워드 랭크 작업 이력 테이블
