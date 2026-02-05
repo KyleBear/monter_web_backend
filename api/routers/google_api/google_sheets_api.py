@@ -24,9 +24,10 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from dotenv import load_dotenv
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from fastapi.requests import Request
 from pydantic import BaseModel
+import threading
 
 # 네이버 API 함수 import (crol.py에서)
 from api.routers.crol import (
@@ -392,15 +393,16 @@ class GoogleSheetsRankUpdater:
             logger.error(f"순위 조회 중 오류: keyword='{keyword}', error={e}", exc_info=True)
             return None
     
-    def update_ranks(self, ranks: List[Union[int, str, None]]):
+    def update_ranks(self, ranks: List[Union[int, str, None]], start_index: int = 0):
         """
         J열에 순위 데이터 업데이트
         
         Args:
             ranks: 순위 리스트 (int: 순위, "확인불가": 1000등 밖, None: 빈칸)
+            start_index: 시작 인덱스 (배치 업데이트용, 기본값: 0)
         """
         try:
-            logger.info(f"J열에 순위 데이터 업데이트 시작 ({len(ranks)}개 행)...")
+            logger.info(f"J열에 순위 데이터 업데이트 시작 (인덱스 {start_index}부터 {len(ranks)}개 행)...")
             
             # 순위 값을 문자열 리스트로 변환
             values = []
@@ -412,14 +414,11 @@ class GoogleSheetsRankUpdater:
                 else:
                     values.append([str(rank)])  # int를 문자열로 변환
             
-            # MAX_ROWS만큼만 업데이트
-            values = values[:MAX_ROWS]
+            # 업데이트할 범위 계산
+            start_row = START_ROW + start_index
+            end_row = start_row + len(values) - 1
             
-            # 빈 셀도 포함하여 정확히 MAX_ROWS만큼 데이터 준비
-            while len(values) < MAX_ROWS:
-                values.append([''])
-            
-            range_j = self._get_range('J', START_ROW, START_ROW + MAX_ROWS - 1)
+            range_j = self._get_range('J', start_row, end_row)
             
             self.service.spreadsheets().values().update(
                 spreadsheetId=self.spreadsheet_id,
@@ -428,7 +427,7 @@ class GoogleSheetsRankUpdater:
                 body={'values': values}
             ).execute()
             
-            logger.info(f"J열 업데이트 완료 ({len(values)}개 행)")
+            logger.info(f"✅ J열 업데이트 완료 (행 {start_row}~{end_row}, {len(values)}개)")
             
         except HttpError as e:
             logger.error(f"J열 업데이트 실패: {e}", exc_info=True)
@@ -477,96 +476,123 @@ class GoogleSheetsRankUpdater:
                     'empty_count': 0
                 }
             
-            # 2. 각 행에 대해 순위 조회 (병렬 처리)
-            logger.info("\n[3단계] 순위 조회 시작 (병렬 처리)...")
+            # 2. 각 행에 대해 순위 조회 및 업데이트 (200개씩 배치 처리)
+            logger.info("\n[3단계] 순위 조회 및 업데이트 시작 (200개씩 배치 처리)...")
             total_count = len(input_data)
-            ranks = [None] * total_count  # 결과를 저장할 리스트 (인덱스 순서 유지)
+            batch_size = 200  # 배치 크기
             
-            # 통계를 위한 락
-            stats_lock = Lock()
-            success_count = 0
-            empty_count = 0
+            # 전체 통계
+            total_success_count = 0
+            total_unavailable_count = 0
+            total_empty_count = 0
             
-            logger.info(f"총 {total_count}개 행의 순위 조회 시작 (병렬 처리, API 간격: 3초)...")
+            logger.info(f"총 {total_count}개 행을 {batch_size}개씩 {((total_count + batch_size - 1) // batch_size)}개 배치로 처리합니다.")
             
-            def process_single_rank(idx: int, data: Dict) -> tuple:
-                """
-                단일 행의 순위를 조회하는 함수
+            # 배치별로 순차 처리
+            for batch_start in range(0, total_count, batch_size):
+                batch_end = min(batch_start + batch_size, total_count)
+                batch_data = input_data[batch_start:batch_end]
+                batch_num = (batch_start // batch_size) + 1
+                total_batches = (total_count + batch_size - 1) // batch_size
                 
-                Args:
-                    idx: 인덱스 (0부터 시작)
-                    data: {'keyword': str, 'nvmid': str, 'price_nvmid': str or None}
+                logger.info(f"\n[배치 {batch_num}/{total_batches}] {batch_start+1}~{batch_end}행 처리 시작 ({len(batch_data)}개)...")
                 
-                Returns:
-                    (idx, rank): 인덱스와 순위 결과
-                """
-                # 각 작업이 시작될 때 3초 간격을 두기 위해 지연
-                # 첫 번째 작업은 즉시 시작, 두 번째는 3초 후, 세 번째는 6초 후...
-                delay = idx * 3.0
-                if delay > 0:
-                    time.sleep(delay)
+                # 배치 내에서 병렬 처리
+                batch_ranks = [None] * len(batch_data)
+                stats_lock = Lock()
+                batch_success_count = 0
+                batch_empty_count = 0
                 
-                keyword = data['keyword']
-                nvmid = data['nvmid']
-                price_nvmid = data['price_nvmid']
-                
-                # 키워드와 nvmid가 모두 있어야 조회
-                if keyword and nvmid:
-                    rank = self.get_rank_by_naver_api(keyword, nvmid, price_nvmid)
+                def process_single_rank(batch_idx: int, data: Dict) -> tuple:
+                    """
+                    단일 행의 순위를 조회하는 함수 (배치 내 인덱스 사용)
                     
-                    # 통계 업데이트 (스레드 안전)
-                    with stats_lock:
-                        nonlocal success_count, empty_count
-                        if rank and isinstance(rank, int):
-                            success_count += 1
-                        elif rank == "확인불가":
-                            pass  # 확인불가는 별도 카운트
-                        else:
-                            empty_count += 1
+                    Args:
+                        batch_idx: 배치 내 인덱스 (0부터 시작)
+                        data: {'keyword': str, 'nvmid': str, 'price_nvmid': str or None}
                     
-                    return (idx, rank)
-                else:
-                    # 키워드 또는 nvmid가 없으면 빈칸
-                    with stats_lock:
-                        empty_count += 1
-                    return (idx, None)
-            
-            # 병렬 처리 실행
-            max_workers = min(10, total_count)  # 최대 10개의 워커 스레드 사용
-            completed = 0
-            
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # 모든 작업 제출
-                future_to_idx = {
-                    executor.submit(process_single_rank, idx, data): idx 
-                    for idx, data in enumerate(input_data)
-                }
-                
-                # 완료된 작업 처리
-                for future in as_completed(future_to_idx):
-                    try:
-                        idx, rank = future.result()
-                        ranks[idx] = rank
-                        completed += 1
+                    Returns:
+                        (batch_idx, rank): 배치 내 인덱스와 순위 결과
+                    """
+                    # 각 작업이 시작될 때 3초 간격을 두기 위해 지연
+                    delay = batch_idx * 3.0
+                    if delay > 0:
+                        time.sleep(delay)
+                    
+                    keyword = data['keyword']
+                    nvmid = data['nvmid']
+                    price_nvmid = data['price_nvmid']
+                    
+                    # 키워드와 nvmid가 모두 있어야 조회
+                    if keyword and nvmid:
+                        rank = self.get_rank_by_naver_api(keyword, nvmid, price_nvmid)
                         
-                        # 진행 상황 로깅 (100개마다)
-                        if completed % 100 == 0:
-                            with stats_lock:
-                                logger.info(f"[진행상황] {completed}/{total_count} 행 처리 완료 (순위 발견: {success_count}개)")
-                    except Exception as e:
-                        idx = future_to_idx[future]
-                        logger.error(f"행 {idx+1} 처리 중 오류: {e}", exc_info=True)
-                        ranks[idx] = None
-                        completed += 1
+                        # 통계 업데이트 (스레드 안전)
+                        with stats_lock:
+                            nonlocal batch_success_count, batch_empty_count
+                            if rank and isinstance(rank, int):
+                                batch_success_count += 1
+                            elif rank == "확인불가":
+                                pass  # 확인불가는 별도 카운트
+                            else:
+                                batch_empty_count += 1
+                        
+                        return (batch_idx, rank)
+                    else:
+                        # 키워드 또는 nvmid가 없으면 빈칸
+                        with stats_lock:
+                            batch_empty_count += 1
+                        return (batch_idx, None)
+                
+                # 배치 내 병렬 처리 실행
+                max_workers = min(10, len(batch_data))  # 최대 10개의 워커 스레드 사용
+                completed = 0
+                
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    # 배치 내 모든 작업 제출
+                    future_to_idx = {
+                        executor.submit(process_single_rank, idx, data): idx 
+                        for idx, data in enumerate(batch_data)
+                    }
+                    
+                    # 완료된 작업 처리
+                    for future in as_completed(future_to_idx):
+                        try:
+                            batch_idx, rank = future.result()
+                            batch_ranks[batch_idx] = rank
+                            completed += 1
+                            
+                            # 진행 상황 로깅 (50개마다)
+                            if completed % 50 == 0:
+                                with stats_lock:
+                                    logger.info(f"  [배치 {batch_num} 진행] {completed}/{len(batch_data)} 행 처리 완료 (순위 발견: {batch_success_count}개)")
+                        except Exception as e:
+                            batch_idx = future_to_idx[future]
+                            logger.error(f"  [배치 {batch_num}] 행 {batch_start + batch_idx + 1} 처리 중 오류: {e}", exc_info=True)
+                            batch_ranks[batch_idx] = None
+                            completed += 1
+                
+                # 배치 "확인불가" 개수 카운트
+                batch_unavailable_count = sum(1 for r in batch_ranks if r == "확인불가")
+                
+                # 통계 누적
+                total_success_count += batch_success_count
+                total_unavailable_count += batch_unavailable_count
+                total_empty_count += batch_empty_count
+                
+                logger.info(f"  [배치 {batch_num} 완료] 순위 발견: {batch_success_count}개, 확인불가: {batch_unavailable_count}개, 빈칸: {batch_empty_count}개")
+                
+                # 3-1. 배치별로 J열 업데이트 (즉시 반영)
+                logger.info(f"  [배치 {batch_num}] J열 업데이트 중... (행 {START_ROW + batch_start}~{START_ROW + batch_end - 1})")
+                try:
+                    self.update_ranks(batch_ranks, start_index=batch_start)
+                    logger.info(f"  ✅ [배치 {batch_num}] J열 업데이트 완료")
+                except Exception as e:
+                    logger.error(f"  ❌ [배치 {batch_num}] J열 업데이트 실패: {e}", exc_info=True)
+                    # 배치 업데이트 실패해도 다음 배치 계속 진행
             
-            # "확인불가" 개수도 카운트
-            unavailable_count = sum(1 for r in ranks if r == "확인불가")
-            logger.info(f"✅ 순위 조회 완료: 총 {total_count}개 행, 순위 발견: {success_count}개, 확인불가: {unavailable_count}개, 빈칸: {empty_count}개")
-            
-            # 4. J열에 순위 데이터 업데이트
-            logger.info("\n[4단계] J열에 순위 데이터 업데이트 시작...")
-            self.update_ranks(ranks)
-            logger.info("✅ J열 업데이트 완료")
+            # 전체 통계 출력
+            logger.info(f"\n✅ 전체 순위 조회 완료: 총 {total_count}개 행, 순위 발견: {total_success_count}개, 확인불가: {total_unavailable_count}개, 빈칸: {total_empty_count}개")
             
             logger.info("=" * 60)
             logger.info("Google Sheets 순위 업데이트 완료!")
@@ -574,9 +600,9 @@ class GoogleSheetsRankUpdater:
             
             return {
                 'total_rows': total_count,
-                'success_count': success_count,
-                'unavailable_count': unavailable_count,
-                'empty_count': empty_count
+                'success_count': total_success_count,
+                'unavailable_count': total_unavailable_count,
+                'empty_count': total_empty_count
             }
             
         except Exception as e:
@@ -642,11 +668,13 @@ async def insert_column_timestamp(request: Optional[SpreadsheetRequest] = None):
 @router.get("/update-ranks", response_model=UpdateRanksResponse)
 async def update_ranks_endpoint_get(
     spreadsheet_id: Optional[str] = Query(None, description="Google 스프레드시트 ID (없으면 기본값 사용)"),
-    insert_column_first: bool = Query(True, description="먼저 J열을 삽입할지 여부 (기본값: True)")
+    insert_column_first: bool = Query(True, description="먼저 J열을 삽입할지 여부 (기본값: True)"),
+    background_tasks: BackgroundTasks = BackgroundTasks()
 ):
     """
-    Google Sheets 순위 업데이트 (GET 요청)
+    Google Sheets 순위 업데이트 (GET 요청) - 백그라운드 작업
     
+    - 즉시 응답을 반환하고 작업은 백그라운드에서 실행됩니다 (504 타임아웃 방지)
     - (옵션) J열 삽입 및 타임스탬프 기록
     - G열(키워드), H열(원부 nvmid), I열(가격비교 nvmid)을 읽습니다
     - 네이버 OpenAPI로 순위를 조회합니다 (가격비교 nvmid가 있으면 우선 사용)
@@ -654,41 +682,55 @@ async def update_ranks_endpoint_get(
     
     사용법:
     - Google Sheets에서 HYPERLINK 함수 사용:
-      =HYPERLINK("http://localhost:8001/api/google-sheets/update-ranks?spreadsheet_id=1aJzc2kw9dLghK-ltp7B0jyAQT7SjcgYRd0l0qOl1FmA", "순위 업데이트")
+      =HYPERLINK("https://re-switch.co.kr/api/google-sheets/update-ranks?spreadsheet_id=1aJzc2kw9dLghK-ltp7B0jyAQT7SjcgYRd0l0qOl1FmA", "순위 업데이트")
     - 또는 스프레드시트 ID를 셀에서 참조:
-      =HYPERLINK("http://localhost:8001/api/google-sheets/update-ranks?spreadsheet_id=" & A1, "순위 업데이트")
+      =HYPERLINK("https://re-switch.co.kr/api/google-sheets/update-ranks?spreadsheet_id=" & A1, "순위 업데이트")
     - J열 삽입 없이 순위만 업데이트:
-      =HYPERLINK("http://localhost:8001/api/google-sheets/update-ranks?spreadsheet_id=...&insert_column_first=false", "순위만 업데이트")
+      =HYPERLINK("https://re-switch.co.kr/api/google-sheets/update-ranks?spreadsheet_id=...&insert_column_first=false", "순위만 업데이트")
     """
     try:
         if spreadsheet_id is None:
             spreadsheet_id = DEFAULT_SPREADSHEET_ID
         
-        updater = GoogleSheetsRankUpdater(spreadsheet_id)
-        result = updater.update_all_ranks(insert_column_first=insert_column_first)
+        # 백그라운드 작업 함수 정의
+        def run_update():
+            try:
+                logger.info(f"[백그라운드 작업 시작] 스프레드시트 ID: {spreadsheet_id}")
+                updater = GoogleSheetsRankUpdater(spreadsheet_id)
+                result = updater.update_all_ranks(insert_column_first=insert_column_first)
+                logger.info(f"[백그라운드 작업 완료] 스프레드시트 ID: {spreadsheet_id}, 결과: {result}")
+            except Exception as e:
+                logger.error(f"[백그라운드 작업 실패] 스프레드시트 ID: {spreadsheet_id}, 오류: {e}", exc_info=True)
         
+        # 백그라운드 작업 추가
+        background_tasks.add_task(run_update)
+        
+        # 즉시 응답 반환 (504 타임아웃 방지)
+        logger.info(f"[순위 업데이트 요청] 스프레드시트 ID: {spreadsheet_id}, 백그라운드 작업 시작")
         return UpdateRanksResponse(
             success=True,
-            message="순위 업데이트 완료",
-            total_rows=result['total_rows'],
-            success_count=result['success_count'],
-            unavailable_count=result['unavailable_count'],
-            empty_count=result['empty_count'],
+            message="순위 업데이트가 백그라운드에서 시작되었습니다. 작업이 완료되면 J열이 업데이트됩니다.",
+            total_rows=0,
+            success_count=0,
+            unavailable_count=0,
+            empty_count=0,
             spreadsheet_id=spreadsheet_id
         )
     except Exception as e:
-        logger.error(f"순위 업데이트 실패: {e}", exc_info=True)
+        logger.error(f"순위 업데이트 시작 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/update-ranks", response_model=UpdateRanksResponse)
 async def update_ranks_endpoint(
     request: Optional[SpreadsheetRequest] = None,
-    insert_column_first: bool = Query(True, description="먼저 J열을 삽입할지 여부 (기본값: True)")
+    insert_column_first: bool = Query(True, description="먼저 J열을 삽입할지 여부 (기본값: True)"),
+    background_tasks: BackgroundTasks = BackgroundTasks()
 ):
     """
-    Google Sheets 순위 업데이트 (POST 요청)
+    Google Sheets 순위 업데이트 (POST 요청) - 백그라운드 작업
     
+    - 즉시 응답을 반환하고 작업은 백그라운드에서 실행됩니다 (504 타임아웃 방지)
     - (옵션) J열 삽입 및 타임스탬프 기록
     - G열(키워드), H열(원부 nvmid), I열(가격비교 nvmid)을 읽습니다
     - 네이버 OpenAPI로 순위를 조회합니다 (가격비교 nvmid가 있으면 우선 사용)
@@ -697,20 +739,32 @@ async def update_ranks_endpoint(
     try:
         spreadsheet_id = request.spreadsheet_id if request and request.spreadsheet_id else DEFAULT_SPREADSHEET_ID
         
-        updater = GoogleSheetsRankUpdater(spreadsheet_id)
-        result = updater.update_all_ranks(insert_column_first=insert_column_first)
+        # 백그라운드 작업 함수 정의
+        def run_update():
+            try:
+                logger.info(f"[백그라운드 작업 시작] 스프레드시트 ID: {spreadsheet_id}")
+                updater = GoogleSheetsRankUpdater(spreadsheet_id)
+                result = updater.update_all_ranks(insert_column_first=insert_column_first)
+                logger.info(f"[백그라운드 작업 완료] 스프레드시트 ID: {spreadsheet_id}, 결과: {result}")
+            except Exception as e:
+                logger.error(f"[백그라운드 작업 실패] 스프레드시트 ID: {spreadsheet_id}, 오류: {e}", exc_info=True)
         
+        # 백그라운드 작업 추가
+        background_tasks.add_task(run_update)
+        
+        # 즉시 응답 반환 (504 타임아웃 방지)
+        logger.info(f"[순위 업데이트 요청] 스프레드시트 ID: {spreadsheet_id}, 백그라운드 작업 시작")
         return UpdateRanksResponse(
             success=True,
-            message="순위 업데이트 완료",
-            total_rows=result['total_rows'],
-            success_count=result['success_count'],
-            unavailable_count=result['unavailable_count'],
-            empty_count=result['empty_count'],
+            message="순위 업데이트가 백그라운드에서 시작되었습니다. 작업이 완료되면 J열이 업데이트됩니다.",
+            total_rows=0,
+            success_count=0,
+            unavailable_count=0,
+            empty_count=0,
             spreadsheet_id=spreadsheet_id
         )
     except Exception as e:
-        logger.error(f"순위 업데이트 실패: {e}", exc_info=True)
+        logger.error(f"순위 업데이트 시작 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
