@@ -155,6 +155,24 @@ class UsersAdmin(Base):
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
+# 사용자 세션 테이블
+class UserSession(Base):
+    __tablename__ = 'user_session'
+    
+    session_id = Column(BigInteger, primary_key=True, autoincrement=True, comment='세션 ID')
+    token = Column(String(255), unique=True, nullable=False, index=True, comment='세션 토큰')
+    user_id = Column(BigInteger, nullable=False, index=True, comment='사용자 ID')
+    username = Column(String(255), nullable=False, comment='사용자명')
+    role = Column(String(50), nullable=False, comment='역할')
+    created_at = Column(DateTime, default=func.now(), comment='생성일시')
+    expires_at = Column(DateTime, nullable=False, index=True, comment='만료일시')
+    
+    __table_args__ = (
+        Index('idx_token', 'token'),
+        Index('idx_user_id', 'user_id'),
+        Index('idx_expires_at', 'expires_at'),
+    )
+
 # 광고 테이블 (광고관리)
 class AdvertisementsAdmin(Base):
     __tablename__ = 'advertisements_admin'

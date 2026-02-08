@@ -62,6 +62,7 @@ app.include_router(reward_api.router, tags=["외부 파트너사 리워드 API (
 app.include_router(keyword_search_api.router, prefix="/keyword-search", tags=["키워드 검색"])
 app.include_router(keyword_search_api2.router, prefix="/keyword-extract", tags=["키워드 추출"])
 app.include_router(google_sheets_api.router, prefix="/api/google-sheets", tags=["Google Sheets"])
+# app.include_router(google_sheets_api.router, prefix="/google-sheets", tags=["Google Sheets"])  # /api/ 없이도 접근 가능
 
 # 로컬개발용 API 라우터 등록
 # app.include_router(auth.router, prefix="/api/auth", tags=["인증"])
