@@ -349,7 +349,7 @@ def extract_tag_and_price_from_search_query(
             logger.info("[태그 추출] 브라우저를 확인하실 수 있습니다.")
             logger.info("[태그 추출] 상품 페이지가 정상적으로 로드되었는지 확인해주세요.")
             logger.info("[태그 추출] 브라우저를 수동으로 닫으시거나, 10초 후 자동으로 닫힙니다.")
-            time.sleep(10)  # 사용자가 브라우저를 확인할 시간 제공
+            time.sleep(4)  # 사용자가 브라우저를 확인할 시간 제공
             driver.quit()
             logger.info("[태그 추출] 브라우저 종료 완료")
         
@@ -542,10 +542,7 @@ async def update_reward_rank_tag_and_price_async(
         
         # 병렬 처리 실행
         stats = await process_batch_parallel(reward_ranks, delay, max_workers)
-        
-        logger.info("=" * 60)
         logger.info(f"[완료] 총 {stats['total']}개 중 성공: {stats['success']}개, 업데이트: {stats['updated']}개, 실패: {stats['failed']}개")
-        logger.info("=" * 60)
         
     except Exception as e:
         logger.error(f"[오류] DB 작업 중 오류 발생: {e}", exc_info=True)
@@ -579,10 +576,7 @@ def update_reward_rank_tag_and_price(
 
 def main():
     """메인 함수"""
-    logger.info("=" * 60)
     logger.info("reward_rank 태그 및 가격 업데이트 스크립트")
-    logger.info("=" * 60)
-    logger.info("")
     
     try:
         # 명령줄 인자 파싱
@@ -617,7 +611,6 @@ def main():
             logger.info("[설정] reward_id 범위: 전체")
         logger.info(f"[설정] 레코드 간 대기 시간: {delay}초")
         logger.info(f"[설정] 병렬 작업 수: 4개")
-        logger.info("")
         
         # 업데이트 실행
         update_reward_rank_tag_and_price(

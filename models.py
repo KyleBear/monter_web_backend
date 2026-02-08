@@ -325,6 +325,7 @@ class RewardLinkKeyword(Base):
     
     keyword_id = Column(BigInteger, primary_key=True, autoincrement=True, comment='키워드 ID')
     link_id = Column(BigInteger, nullable=False, comment='링크 ID')
+    short_code = Column(String(40), nullable=False, comment='짧은 링크 코드 (예: v8ZSBUT43vj)')
     query_keyword = Column(String(255), nullable=False, comment='query 파라미터 키워드')
     acq_keyword = Column(String(255), nullable=False, comment='acq 파라미터 키워드')
     created_at = Column(DateTime, default=func.now(), comment='생성일시')

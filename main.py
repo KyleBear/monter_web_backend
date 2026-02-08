@@ -158,23 +158,36 @@ def schedule_rank_update():
     except Exception as e:
         logger.error(f"스케줄러 순위 업데이트 중 오류: {e}", exc_info=True)
 
-def schedule_reward_target_processing():
-    """주기적으로 reward_target을 처리하여 reward_rank에 저장"""
-    try:
-        from api.routers.rewards import process_reward_targets
-        logger.info("스케줄러: reward_target 처리 시작")
-        process_reward_targets()
-        logger.info("스케줄러: reward_target 처리 완료")
-    except Exception as e:
-        logger.error(f"스케줄러 reward_target 처리 중 오류: {e}", exc_info=True)
+# def schedule_reward_target_processing():
+#     """주기적으로 reward_target을 처리하여 reward_rank에 저장"""
+#     try:
+#         from api.routers.rewards import process_reward_targets
+#         logger.info("스케줄러: reward_target 처리 시작")
+#         process_reward_targets()
+#         logger.info("스케줄러: reward_target 처리 완료")
+#     except Exception as e:
+#         logger.error(f"스케줄러 reward_target 처리 중 오류: {e}", exc_info=True)
 
 def schedule_tag_crawling():
-    """매일 02시에 태그 크롤링 실행"""
+    """매일 06시에 태그 및 가격 크롤링 실행 (reward_tag_price_crwaling_indb.py)"""
     try:
-        from api.routers.keyword_search_api2 import crawl_tags_for_all_rewards
-        logger.info("스케줄러: 태그 크롤링 시작")
-        crawled_count = crawl_tags_for_all_rewards(headless=True, delay=5)
-        logger.info(f"스케줄러: 태그 크롤링 완료 (크롤링된 레코드: {crawled_count}개)")
+        import sys
+        import os
+        # 프로젝트 루트 경로 추가
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if current_dir not in sys.path:
+            sys.path.insert(0, current_dir)
+        
+        from reward_tag_price_crwaling_indb import update_reward_rank_tag_and_price
+        
+        logger.info("스케줄러: 태그 및 가격 크롤링 시작 (reward_tag_price_crwaling_indb.py)")
+        update_reward_rank_tag_and_price(
+            start_id=None,  # 전체 처리
+            end_id=None,    # 전체 처리
+            delay=5.0,      # 5초 대기
+            max_workers=4    # 병렬 작업 수
+        )
+        logger.info("스케줄러: 태그 및 가격 크롤링 완료")
     except Exception as e:
         logger.error(f"스케줄러 태그 크롤링 중 오류: {e}", exc_info=True)
 
@@ -186,18 +199,12 @@ scheduler.add_job(
     replace_existing=True
 )
 
-# 매일 01시에 reward_target 처리 실행
-scheduler.add_job(
-    schedule_reward_target_processing,
-    trigger=CronTrigger(hour=1, minute=0),  # 매일 01시
-    id='process_reward_targets',
-    replace_existing=True
-)
+# ToDO reward_link 테이블 reward_rank 에 연결 _ 현재 수동 
 
-# 매일 02시에 태그 크롤링 실행
+# 매일 06시에 태그 크롤링 실행
 scheduler.add_job(
     schedule_tag_crawling,
-    trigger=CronTrigger(hour=2, minute=0),  # 매일 02시
+    trigger=CronTrigger(hour=6, minute=0),  # 매일 06시
     id='crawl_tags_daily',
     replace_existing=True
 )
@@ -215,7 +222,7 @@ scheduler.start()
 logger.info("스케줄러가 시작되었습니다.")
 logger.info("- 매일 00시 01분: 광고 상태 업데이트 (pending→normal→ending→ended)")
 logger.info("- 매일 01시: reward_target 처리 (reward_rank에 저장)")
-logger.info("- 매일 02시: 태그 크롤링 (reward_rank 테이블)")
+logger.info("- 매일 06시: 태그 및 가격 크롤링 (reward_tag_price_crwaling_indb.py)")
 logger.info("- 매일 오전 10시: 순위 업데이트")
 
 # 서버 종료 시 스케줄러 종료
@@ -229,9 +236,6 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8001,
         # reload=True  # 개발 모드: 코드 변경 시 자동 재시작
+        workers=4, 
         reload=False  # 개발 모드: 코드 변경 시 자동 재시작
     )
-
-
-
-

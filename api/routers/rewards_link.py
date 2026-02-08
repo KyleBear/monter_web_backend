@@ -391,7 +391,8 @@ async def create_link(
                 
                 # 각 reward_link에 하나의 키워드 조합만 저장
                 keyword = RewardLinkKeyword(
-                    link_id=new_link.link_id,  # 각각 다른 link_id
+                    link_id=new_link.link_id,
+                    short_code=short_code,  # 각각 다른 link_id
                     query_keyword=query,
                     acq_keyword=acq
                 )
@@ -484,6 +485,81 @@ async def create_link(
         )
 
 
+@router.put("/links/{link_id}/keywords/{keyword_id}")
+async def update_keyword(
+    link_id: int,
+    keyword_id: int,
+    keyword_data: KeywordAdd,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    키워드 조합 수정 (관리자용)
+    """
+    check_admin_permission(current_user, db)
+    
+    try:
+        # 링크 확인
+        link = db.query(RewardLink).filter(RewardLink.link_id == link_id).first()
+        
+        if not link:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"링크를 찾을 수 없습니다: {link_id}"
+            )
+        
+        # 키워드 조회
+        keyword = db.query(RewardLinkKeyword).filter(
+            RewardLinkKeyword.keyword_id == keyword_id,
+            RewardLinkKeyword.link_id == link_id
+        ).first()
+        
+        if not keyword:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"키워드를 찾을 수 없습니다: {keyword_id}"
+            )
+        
+        query = keyword_data.get_query()
+        acq = keyword_data.get_acq()
+        
+        if not query or not acq:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="query와 acq 키워드를 모두 입력해주세요."
+            )
+        
+        # 키워드 수정
+        keyword.query_keyword = query
+        keyword.acq_keyword = acq
+        keyword.short_code = link.short_code  # short_code도 업데이트
+        keyword.updated_at = datetime.now()
+        
+        db.commit()
+        db.refresh(keyword)
+        
+        return {
+            "success": True,
+            "message": "키워드가 수정되었습니다.",
+            "data": {
+                "keyword_id": keyword.keyword_id,
+                "query_keyword": keyword.query_keyword,
+                "acq_keyword": keyword.acq_keyword,
+                "short_code": keyword.short_code
+            }
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"키워드 수정 중 오류: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"키워드 수정 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
 @router.put("/links/{link_id}")
 async def update_link(
     link_id: int,
@@ -527,6 +603,7 @@ async def update_link(
                 
                 keyword = RewardLinkKeyword(
                     link_id=link_id,
+                    short_code=link.short_code,  # short_code 추가
                     query_keyword=query,
                     acq_keyword=acq
                 )
@@ -605,6 +682,7 @@ async def add_keyword(
         # 키워드 조합 추가
         keyword = RewardLinkKeyword(
             link_id=link_id,
+            short_code=link.short_code,
             query_keyword=query,
             acq_keyword=acq
         )
@@ -696,46 +774,61 @@ async def delete_keyword(
         )
 
 
-@router.delete("/links/{link_id}")
+@router.delete("/links/{short_code}")
 async def delete_link(
-    link_id: int,
+    short_code: str,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
     """
-    링크 삭제 (관리자용)
+    SHORT_CODE 기준으로 모든 링크 및 키워드 삭제 (관리자용)
+    RANDOM_LINK 버튼의 작업삭제 기능
     """
     check_admin_permission(current_user, db)
     
     try:
-        link = db.query(RewardLink).filter(RewardLink.link_id == link_id).first()
+        # short_code로 모든 RewardLink 레코드 조회
+        links = db.query(RewardLink).filter(
+            RewardLink.short_code == short_code
+        ).all()
         
-        if not link:
+        if not links:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"링크를 찾을 수 없습니다: {link_id}"
+                detail=f"short_code '{short_code}'에 해당하는 링크를 찾을 수 없습니다."
             )
         
-        # 관련 키워드 삭제
-        db.query(RewardLinkKeyword).filter(
-            RewardLinkKeyword.link_id == link_id
-        ).delete()
+        # short_code 기준으로 모든 키워드 삭제
+        deleted_keywords = db.query(RewardLinkKeyword).filter(
+            RewardLinkKeyword.short_code == short_code
+        ).all()
+        deleted_keyword_count = len(deleted_keywords)
         
-        # 링크 삭제
-        db.delete(link)
+        for keyword in deleted_keywords:
+            db.delete(keyword)
+        
+        # 모든 링크 삭제
+        deleted_link_count = len(links)
+        for link in links:
+            db.delete(link)
+        
         db.commit()
+        
+        logger.info(f"[작업삭제] short_code '{short_code}': {deleted_link_count}개 링크, {deleted_keyword_count}개 키워드 삭제 완료")
         
         return {
             "success": True,
-            "message": "링크가 삭제되었습니다."
+            "message": f"short_code '{short_code}'에 해당하는 모든 항목이 삭제되었습니다.",
+            "deleted_links": deleted_link_count,
+            "deleted_keywords": deleted_keyword_count
         }
     
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"링크 삭제 중 오류: {e}", exc_info=True)
+        logger.error(f"[작업삭제] short_code '{short_code}' 삭제 중 오류: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"링크 삭제 중 오류가 발생했습니다: {str(e)}"
+            detail=f"삭제 중 오류가 발생했습니다: {str(e)}"
         )
