@@ -98,8 +98,8 @@ def generate_short_code(length: int = 10) -> str:
 
 
 def generate_random_ackey(length: int = 8) -> str:
-    """랜덤 ackey 생성 (영문숫자 8글자)"""
-    chars = string.ascii_letters + string.digits
+    """랜덤 ackey 생성 (소문자 영문숫자 8글자)"""
+    chars = string.ascii_lowercase + string.digits
     return ''.join(random.choice(chars) for _ in range(length))
 
 
@@ -227,8 +227,11 @@ async def redirect_to_naver(
     """
     짧은 링크로 접속 시 랜덤 네이버 URL로 리다이렉트
     short_code에 해당하는 모든 RewardLink 중 랜덤으로 하나를 선택하여 reward_link로 리다이렉트
+    ackey는 소문자로 변환하여 사용
     """
     try:
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        
         # short_code로 모든 RewardLink 레코드 조회 (같은 short_code를 가진 여러 레코드)
         links = db.query(RewardLink).filter(
             RewardLink.short_code == short_code
@@ -252,6 +255,32 @@ async def redirect_to_naver(
         # 랜덤으로 하나의 레코드 선택
         random_link = random.choice(valid_links)
         naver_url = random_link.reward_link.strip()
+        
+        # URL에서 ackey 파라미터 추출 및 소문자로 변환
+        try:
+            parsed = urlparse(naver_url)
+            params = parse_qs(parsed.query, keep_blank_values=True)
+            
+            # ackey가 있으면 소문자로 변환
+            if 'ackey' in params and params['ackey']:
+                original_ackey = params['ackey'][0]
+                lowercase_ackey = original_ackey.lower()
+                params['ackey'] = [lowercase_ackey]
+                
+                # URL 재구성
+                new_query = urlencode(params, doseq=True)
+                naver_url = urlunparse((
+                    parsed.scheme,
+                    parsed.netloc,
+                    parsed.path,
+                    parsed.params,
+                    new_query,
+                    parsed.fragment
+                ))
+                
+                logger.info(f"[리다이렉트] ackey 소문자 변환: {original_ackey} -> {lowercase_ackey}")
+        except Exception as e:
+            logger.warning(f"[리다이렉트] ackey 소문자 변환 실패 (원본 URL 사용): {e}")
         
         logger.info(f"[리다이렉트] short_code={short_code}, 선택된 link_id={random_link.link_id}, 네이버 URL: {naver_url[:100]}...")
         

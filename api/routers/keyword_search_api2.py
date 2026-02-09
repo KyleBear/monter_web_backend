@@ -128,8 +128,8 @@ def remove_html_tags(text: str) -> str:
 
 
 def generate_ackey(length: int = 8) -> str:
-    """영문숫자 랜덤 문자열 생성 (ackey용)"""
-    characters = string.ascii_letters + string.digits
+    """소문자 영문숫자 랜덤 문자열 생성 (ackey용)"""
+    characters = string.ascii_lowercase + string.digits
     return ''.join(random.choice(characters) for _ in range(length))
 
 
