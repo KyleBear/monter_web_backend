@@ -348,4 +348,13 @@ class RewardLinkKeyword(Base):
     acq_keyword = Column(String(255), nullable=False, comment='acq 파라미터 키워드')
     created_at = Column(DateTime, default=func.now(), comment='생성일시')
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment='수정일시')
+
+
+# 랜덤 ACQ 테이블
+class RandomAcq(Base):
+    __tablename__ = 'random_acq'
+    
+    acq_id = Column(BigInteger, primary_key=True, autoincrement=True, comment='ACQ ID')
+    acq_word = Column(String(50), nullable=False, comment='ACQ 단어')
+    adj_word = Column(String(50), nullable=False, comment='형용사 단어')
     

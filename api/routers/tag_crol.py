@@ -29,6 +29,7 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db_code.database import SessionLocal
 from db_code.models import Product, ProxyIP
+from models import RandomAcq  # random_acq 테이블 모델
 from sqlalchemy import Column, BigInteger, String, DateTime, func
 from sqlalchemy.orm import declarative_base
 
@@ -651,44 +652,57 @@ def generate_acr():
     """1~10 사이 랜덤 숫자"""
     return random.randint(1, 10)
 
-def generate_acq_from_product_name(product_name: str) -> str:
+def generate_acq_from_random_table(db: SessionLocal = None) -> str:
     """
-    제품명에서 2-3개 단어를 선택하여 acq 생성
+    random_acq 테이블에서 acq_word와 adj_word를 랜덤으로 선택하여 acq 생성
     
     Args:
-        product_name: 제품명
+        db: DB 세션 (없으면 새로 생성)
     
     Returns:
-        str: acq (2-3개 단어)
+        str: 생성된 acq (acq_word + adj_word 형식)
     """
     try:
-        # 제품명을 공백으로 분리
-        words = product_name.strip().split()
-        
-        if len(words) == 0:
-            return product_name
-        
-        # 2-3개 단어 선택
-        if len(words) >= 3:
-            # 3개 이상이면 랜덤으로 2-3개 선택
-            num_words = random.choice([2, 3])
-            selected_words = random.sample(words, min(num_words, len(words)))
-        elif len(words) == 2:
-            # 2개면 모두 사용
-            selected_words = words
+        if db is None:
+            db = SessionLocal()
+            should_close = True
         else:
-            # 1개면 그대로 사용
-            selected_words = words
+            should_close = False
         
-        acq = ' '.join(selected_words)
-        logger.info(f"[acq 생성] 제품명 '{product_name}' → acq '{acq}'")
-        return acq
+        try:
+            # random_acq 테이블에서 랜덤으로 acq_word와 adj_word 각각 선택
+            acq_words = db.query(RandomAcq.acq_word).filter(
+                RandomAcq.acq_word.isnot(None),
+                RandomAcq.acq_word != ''
+            ).all()
+            
+            adj_words = db.query(RandomAcq.adj_word).filter(
+                RandomAcq.adj_word.isnot(None),
+                RandomAcq.adj_word != ''
+            ).all()
+            
+            if not acq_words or not adj_words:
+                logger.warning("[acq 생성] random_acq 테이블에 데이터가 없습니다. 기본값 사용.")
+                return "상품"  # 기본값
+            
+            # 랜덤 선택
+            selected_acq_word = random.choice([w[0] for w in acq_words])
+            selected_adj_word = random.choice([w[0] for w in adj_words])
+            
+            # acq_word + adj_word 형식으로 조합
+            acq = f"{selected_acq_word} {selected_adj_word}"
+            
+            logger.info(f"[acq 생성] random_acq 테이블에서 생성: '{selected_acq_word}' + '{selected_adj_word}' = '{acq}'")
+            return acq
+        finally:
+            if should_close:
+                db.close()
         
     except Exception as e:
         logger.error(f"[acq 생성] 오류: {e}", exc_info=True)
-        return product_name
+        return "상품"  # 기본값
 
-def create_search_url_with_params(keyword: str, ackey: str = None, acq: str = None, acr: int = None, qdt: int = 0) -> str:
+def create_search_url_with_params(keyword: str, ackey: str = None, acq: str = None, acr: int = None, qdt: int = 0, db: SessionLocal = None) -> str:
     """
     search_url 생성 (ackey, acq, acr, qdt 포함)
     쇼핑 검색 결과를 위한 URL 생성
@@ -696,9 +710,10 @@ def create_search_url_with_params(keyword: str, ackey: str = None, acq: str = No
     Args:
         keyword: 검색 키워드 (상품명)
         ackey: ackey (없으면 생성)
-        acq: acq (없으면 제품명에서 생성)
+        acq: acq (없으면 random_acq 테이블에서 생성)
         acr: acr (없으면 생성)
         qdt: qdt (기본값: 0)
+        db: DB 세션 (acq 생성용)
     
     Returns:
         str: 생성된 search_url (쇼핑 검색 결과)
@@ -708,7 +723,7 @@ def create_search_url_with_params(keyword: str, ackey: str = None, acq: str = No
     if acr is None:
         acr = generate_acr()
     if not acq:
-        acq = generate_acq_from_product_name(keyword)
+        acq = generate_acq_from_random_table(db)
     
     encoded_query = quote(keyword)
     encoded_acq = quote(acq)
@@ -2718,7 +2733,7 @@ def update_search_url_for_reward_rank():
             try:
                 if record.product_name:
                     # product_name으로 search_url 생성
-                    search_url = create_search_url_with_params(record.product_name)
+                    search_url = create_search_url_with_params(record.product_name, db=db)
                     record.search_url = search_url
                     record.updated_at = datetime.now()
                     updated_count += 1
@@ -2764,7 +2779,7 @@ def update_search_url_by_product_url(product_url: str) -> bool:
         
         # product_name이 있으면 search_url 생성
         if record.product_name:
-            search_url = create_search_url_with_params(record.product_name)
+            search_url = create_search_url_with_params(record.product_name, db=db)
             record.search_url = search_url
             record.updated_at = datetime.now()
             db.commit()

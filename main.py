@@ -20,6 +20,8 @@ from api.routers.reward import reward_api_post, reward_api
 from api.routers.google_api import google_sheets_api
 from database import get_db
 from models import RewardLink
+from api.routers.rewards_link import generate_acq_from_random_table
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -120,6 +122,50 @@ async def public_redirect(
         # 랜덤으로 하나의 레코드 선택
         random_link = random.choice(valid_links)
         naver_url = random_link.reward_link.strip()
+        
+        # URL에서 ackey 파라미터 추출 및 소문자로 변환, acq 파라미터 확인 및 추가
+        try:
+            parsed = urlparse(naver_url)
+            params = parse_qs(parsed.query, keep_blank_values=True)
+            
+            # ackey가 있으면 소문자로 변환
+            if 'ackey' in params and params['ackey']:
+                original_ackey = params['ackey'][0]
+                lowercase_ackey = original_ackey.lower()
+                params['ackey'] = [lowercase_ackey]
+                logger.info(f"[공개 리다이렉트] ackey 소문자 변환: {original_ackey} -> {lowercase_ackey}")
+            
+            # acq가 없으면 random_acq 테이블에서 생성하여 추가
+            if 'acq' not in params or not params['acq'] or not params['acq'][0] or params['acq'][0].strip() == '':
+                try:
+                    acq = generate_acq_from_random_table(db)
+                    if acq and acq.strip():
+                        params['acq'] = [acq]
+                        logger.info(f"[공개 리다이렉트] acq 추가: {acq}")
+                    else:
+                        logger.warning(f"[공개 리다이렉트] acq 생성 실패 (빈 값 반환), 기본값 '상품' 사용")
+                        params['acq'] = ['상품']
+                except Exception as acq_error:
+                    logger.error(f"[공개 리다이렉트] acq 생성 중 오류: {acq_error}", exc_info=True)
+                    params['acq'] = ['상품']  # 기본값 사용
+            else:
+                # acq가 있으면 그대로 유지
+                original_acq = params['acq'][0]
+                logger.info(f"[공개 리다이렉트] acq 유지: {original_acq}")
+            
+            # URL 재구성
+            new_query = urlencode(params, doseq=True)
+            naver_url = urlunparse((
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.params,
+                new_query,
+                parsed.fragment
+            ))
+                
+        except Exception as e:
+            logger.warning(f"[공개 리다이렉트] URL 파라미터 처리 실패 (원본 URL 사용): {e}")
         
         logger.info(f"[공개 리다이렉트] short_code={short_code}, 선택된 link_id={random_link.link_id}, 네이버 URL: {naver_url[:100]}...")
         

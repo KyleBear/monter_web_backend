@@ -11,7 +11,7 @@ from sqlalchemy import desc, func
 from pydantic import BaseModel
 from typing import Optional, List
 from database import get_db, SessionLocal
-from models import RewardLink, RewardLinkKeyword, UsersAdmin
+from models import RewardLink, RewardLinkKeyword, UsersAdmin, RandomAcq
 from utils.auth_helpers import get_current_user
 from datetime import datetime
 import random
@@ -66,7 +66,6 @@ class RewardLinkCreate(BaseModel):
     short_link: Optional[str] = None  # 프론트엔드에서 생성한 링크 (선택사항)
     keywords: List[KeywordCombination] = []
     query_list: Optional[List[str]] = None  # query 키워드 리스트
-    acq_list: Optional[List[str]] = None    # acq 키워드 리스트
 
 
 class RewardLinkUpdate(BaseModel):
@@ -95,6 +94,47 @@ def generate_short_code(length: int = 10) -> str:
     """랜덤 짧은 코드 생성 (영문숫자)"""
     chars = string.ascii_letters + string.digits
     return ''.join(random.choice(chars) for _ in range(length))
+
+
+def generate_acq_from_random_table(db: Session) -> str:
+    """
+    random_acq 테이블에서 acq_word와 adj_word를 랜덤으로 선택하여 acq 생성
+    
+    Args:
+        db: DB 세션
+    
+    Returns:
+        str: 생성된 acq (acq_word + adj_word 형식)
+    """
+    try:
+        # random_acq 테이블에서 랜덤으로 acq_word와 adj_word 각각 선택
+        acq_words = db.query(RandomAcq.acq_word).filter(
+            RandomAcq.acq_word.isnot(None),
+            RandomAcq.acq_word != ''
+        ).all()
+        
+        adj_words = db.query(RandomAcq.adj_word).filter(
+            RandomAcq.adj_word.isnot(None),
+            RandomAcq.adj_word != ''
+        ).all()
+        
+        if not acq_words or not adj_words:
+            logger.warning("[acq 생성] random_acq 테이블에 데이터가 없습니다. 기본값 사용.")
+            return "상품"  # 기본값
+        
+        # 랜덤 선택
+        selected_acq_word = random.choice([w[0] for w in acq_words])
+        selected_adj_word = random.choice([w[0] for w in adj_words])
+        
+        # acq_word + adj_word 형식으로 조합
+        acq = f"{selected_acq_word} {selected_adj_word}"
+        
+        logger.info(f"[acq 생성] random_acq 테이블에서 생성: '{selected_acq_word}' + '{selected_adj_word}' = '{acq}'")
+        return acq
+        
+    except Exception as e:
+        logger.error(f"[acq 생성] 오류: {e}", exc_info=True)
+        return "상품"  # 기본값
 
 
 def generate_random_ackey(length: int = 8) -> str:
@@ -228,6 +268,7 @@ async def redirect_to_naver(
     짧은 링크로 접속 시 랜덤 네이버 URL로 리다이렉트
     short_code에 해당하는 모든 RewardLink 중 랜덤으로 하나를 선택하여 reward_link로 리다이렉트
     ackey는 소문자로 변환하여 사용
+    acq가 없으면 random_acq 테이블에서 생성하여 추가
     """
     try:
         from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
@@ -256,7 +297,7 @@ async def redirect_to_naver(
         random_link = random.choice(valid_links)
         naver_url = random_link.reward_link.strip()
         
-        # URL에서 ackey 파라미터 추출 및 소문자로 변환
+        # URL에서 ackey 파라미터 추출 및 소문자로 변환, acq 파라미터 확인 및 추가
         try:
             parsed = urlparse(naver_url)
             params = parse_qs(parsed.query, keep_blank_values=True)
@@ -266,21 +307,39 @@ async def redirect_to_naver(
                 original_ackey = params['ackey'][0]
                 lowercase_ackey = original_ackey.lower()
                 params['ackey'] = [lowercase_ackey]
-                
-                # URL 재구성
-                new_query = urlencode(params, doseq=True)
-                naver_url = urlunparse((
-                    parsed.scheme,
-                    parsed.netloc,
-                    parsed.path,
-                    parsed.params,
-                    new_query,
-                    parsed.fragment
-                ))
-                
                 logger.info(f"[리다이렉트] ackey 소문자 변환: {original_ackey} -> {lowercase_ackey}")
+            
+            # acq가 없으면 random_acq 테이블에서 생성하여 추가
+            if 'acq' not in params or not params['acq'] or not params['acq'][0] or params['acq'][0].strip() == '':
+                try:
+                    acq = generate_acq_from_random_table(db)
+                    if acq and acq.strip():
+                        params['acq'] = [acq]
+                        logger.info(f"[리다이렉트] acq 추가: {acq}")
+                    else:
+                        logger.warning(f"[리다이렉트] acq 생성 실패 (빈 값 반환), 기본값 '상품' 사용")
+                        params['acq'] = ['상품']
+                except Exception as acq_error:
+                    logger.error(f"[리다이렉트] acq 생성 중 오류: {acq_error}", exc_info=True)
+                    params['acq'] = ['상품']  # 기본값 사용
+            else:
+                # acq가 있으면 그대로 유지
+                original_acq = params['acq'][0]
+                logger.info(f"[리다이렉트] acq 유지: {original_acq}")
+            
+            # URL 재구성
+            new_query = urlencode(params, doseq=True)
+            naver_url = urlunparse((
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.params,
+                new_query,
+                parsed.fragment
+            ))
+                
         except Exception as e:
-            logger.warning(f"[리다이렉트] ackey 소문자 변환 실패 (원본 URL 사용): {e}")
+            logger.warning(f"[리다이렉트] URL 파라미터 처리 실패 (원본 URL 사용): {e}")
         
         logger.info(f"[리다이렉트] short_code={short_code}, 선택된 link_id={random_link.link_id}, 네이버 URL: {naver_url[:100]}...")
         
@@ -305,44 +364,37 @@ async def create_link(
 ):
     """
     새 링크 생성 (관리자용)
-    query_list와 acq_list가 제공되면 모든 조합을 생성
+    query_list가 제공되면 모든 조합을 생성
     keywords가 제공되면 그대로 사용
+    acq는 random_acq 테이블에서 랜덤으로 생성
     각 조합마다 별도의 link_id를 생성하되, 모두 같은 short_code를 사용
     """
     check_admin_permission(current_user, db)
     
     try:
-        # query_list와 acq_list가 제공되면 모든 조합 생성
+        # query_list만 사용 (acq는 random_acq 테이블에서 생성)
         keyword_combinations = []
         
-        if link_data.query_list and link_data.acq_list:
-            # 모든 조합 생성
-            logger.info(f"query_list 개수: {len(link_data.query_list)}, acq_list 개수: {len(link_data.acq_list)}")
+        if link_data.query_list:
             for query in link_data.query_list:
                 if not query or not query.strip():
                     continue
-                for acq in link_data.acq_list:
-                    if not acq or not acq.strip():
-                        continue
-                    keyword_combinations.append({
-                        "query": query.strip(),
-                        "acq": acq.strip()
-                    })
-            logger.info(f"생성된 조합 개수: {len(keyword_combinations)}")
+                keyword_combinations.append({
+                    "query": query.strip()
+                })
+            logger.info(f"query_list 개수: {len(keyword_combinations)}")
         elif link_data.keywords:
             # keywords가 제공되면 그대로 사용
             for kw in link_data.keywords:
                 query = kw.get_query()
-                acq = kw.get_acq()
-                if query and acq:
+                if query:
                     keyword_combinations.append({
-                        "query": query,
-                        "acq": acq
+                        "query": query
                     })
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="query_list/acq_list 또는 keywords를 제공해주세요."
+                detail="query_list 또는 keywords를 제공해주세요."
             )
         
         if len(keyword_combinations) == 0:
@@ -354,7 +406,7 @@ async def create_link(
         # 입력 데이터 로깅
         logger.info(f"링크 생성 요청: product_name={link_data.product_name}, 조합 개수={len(keyword_combinations)}")
         for idx, comb in enumerate(keyword_combinations):
-            logger.info(f"  조합[{idx}]: query={comb['query']}, acq={comb['acq']}")
+            logger.info(f"  조합[{idx}]: query={comb['query']}")
         
         # 하나의 short_code 생성 (모든 레코드가 공유)
         max_attempts = 10
@@ -385,7 +437,9 @@ async def create_link(
         
         for idx, comb in enumerate(keyword_combinations):
             query = comb['query']
-            acq = comb['acq']
+            
+            # random_acq 테이블에서 acq 생성
+            acq = generate_acq_from_random_table(db)
             
             logger.info(f"조합[{idx}] 처리 시작: query='{query}', acq='{acq}'")
             
@@ -449,7 +503,6 @@ async def create_link(
                 failed_combinations.append({
                     "index": idx,
                     "query": query,
-                    "acq": acq,
                     "error": str(e)
                 })
                 # 개별 레코드 저장 실패 시에도 계속 진행
@@ -481,7 +534,7 @@ async def create_link(
         if failed_combinations:
             logger.warning(f"일부 조합 저장 실패: {len(failed_combinations)}개 실패")
             for failed in failed_combinations:
-                logger.warning(f"  실패한 조합: query='{failed['query']}', acq='{failed['acq']}', 오류: {failed['error']}")
+                logger.warning(f"  실패한 조합: query='{failed['query']}', 오류: {failed['error']}")
         
         for link_info in created_links:
             logger.info(f"  - link_id={link_info['link_id']}, short_code={link_info['short_code']}, reward_link={link_info['reward_link']}, query='{link_info['query']}', acq='{link_info['acq']}'")
@@ -550,13 +603,15 @@ async def update_keyword(
             )
         
         query = keyword_data.get_query()
-        acq = keyword_data.get_acq()
         
-        if not query or not acq:
+        if not query:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="query와 acq 키워드를 모두 입력해주세요."
+                detail="query 키워드를 입력해주세요."
             )
+        
+        # random_acq 테이블에서 acq 생성
+        acq = generate_acq_from_random_table(db)
         
         # 키워드 수정
         keyword.query_keyword = query
@@ -625,10 +680,12 @@ async def update_link(
             # 새 키워드 추가
             for kw in link_data.keywords:
                 query = kw.get_query()
-                acq = kw.get_acq()
                 
-                if not query or not acq:
+                if not query:
                     continue  # 빈 키워드는 건너뛰기
+                
+                # random_acq 테이블에서 acq 생성
+                acq = generate_acq_from_random_table(db)
                 
                 keyword = RewardLinkKeyword(
                     link_id=link_id,
@@ -700,13 +757,15 @@ async def add_keyword(
             )
         
         query = keyword_data.get_query()
-        acq = keyword_data.get_acq()
         
-        if not query or not acq:
+        if not query:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="query와 acq 키워드를 모두 입력해주세요."
+                detail="query 키워드를 입력해주세요."
             )
+        
+        # random_acq 테이블에서 acq 생성
+        acq = generate_acq_from_random_table(db)
         
         # 키워드 조합 추가
         keyword = RewardLinkKeyword(

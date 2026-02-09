@@ -133,13 +133,54 @@ def generate_ackey(length: int = 8) -> str:
     return ''.join(random.choice(characters) for _ in range(length))
 
 
-def generate_search_url(keyword: str, all_keywords: List[str] = None) -> str:
+def generate_acq_from_random_table(db: Session) -> str:
+    """
+    random_acq 테이블에서 acq_word와 adj_word를 랜덤으로 선택하여 acq 생성
+    
+    Args:
+        db: DB 세션
+    
+    Returns:
+        str: 생성된 acq (acq_word + adj_word 형식)
+    """
+    try:
+        # random_acq 테이블에서 랜덤으로 acq_word와 adj_word 각각 선택
+        acq_words = db.query(RandomAcq.acq_word).filter(
+            RandomAcq.acq_word.isnot(None),
+            RandomAcq.acq_word != ''
+        ).all()
+        
+        adj_words = db.query(RandomAcq.adj_word).filter(
+            RandomAcq.adj_word.isnot(None),
+            RandomAcq.adj_word != ''
+        ).all()
+        
+        if not acq_words or not adj_words:
+            logger.warning("[acq 생성] random_acq 테이블에 데이터가 없습니다. 기본값 사용.")
+            return "상품"  # 기본값
+        
+        # 랜덤 선택
+        selected_acq_word = random.choice([w[0] for w in acq_words])
+        selected_adj_word = random.choice([w[0] for w in adj_words])
+        
+        # acq_word + adj_word 형식으로 조합
+        acq = f"{selected_acq_word} {selected_adj_word}"
+        
+        logger.info(f"[acq 생성] random_acq 테이블에서 생성: '{selected_acq_word}' + '{selected_adj_word}' = '{acq}'")
+        return acq
+        
+    except Exception as e:
+        logger.error(f"[acq 생성] 오류: {e}", exc_info=True)
+        return "상품"  # 기본값
+
+
+def generate_search_url(keyword: str, db: Session = None) -> str:
     """
     네이버 모바일 검색 URL 생성
     
     Args:
         keyword: 검색할 키워드 (query 파라미터용)
-        all_keywords: 저장된 모든 키워드 리스트 (acq 파라미터용, 랜덤 선택)
+        db: DB 세션 (random_acq 테이블 조회용)
     
     Returns:
         네이버 모바일 검색 URL
@@ -150,11 +191,11 @@ def generate_search_url(keyword: str, all_keywords: List[str] = None) -> str:
     # ackey: 영문숫자 8글자 랜덤
     ackey = generate_ackey(8)
     
-    # acq: 저장된 키워드 중 랜덤 (없으면 현재 키워드 사용)
-    if all_keywords and len(all_keywords) > 0:
-        acq_keyword = random.choice(all_keywords)
+    # acq: random_acq 테이블에서 생성
+    if db:
+        acq_keyword = generate_acq_from_random_table(db)
     else:
-        acq_keyword = keyword
+        acq_keyword = keyword  # 기본값 (DB 세션이 없을 경우)
     encoded_acq = quote(acq_keyword)
     
     # acr: 0~10 랜덤
@@ -1970,16 +2011,6 @@ async def extract_main_keywords(
         # (상세 정보 추출은 스케줄러에서 처리하여 reward_rank에 저장)
         saved_rewards = []
         
-        # 같은 nvmid의 기존 키워드들 조회 (acq 파라미터용)
-        existing_keywords = db.query(RewardTarget.keyword).filter(
-            RewardTarget.keyword.isnot(None),
-            RewardTarget.keyword != ''
-        ).all()
-        existing_keyword_list = [kw[0] for kw in existing_keywords if kw[0]]
-        
-        # 현재 저장할 키워드들도 리스트에 추가
-        all_available_keywords = existing_keyword_list + [s["keyword"] for s in selected_keywords]
-        
         import logging
         logger = logging.getLogger(__name__)
         
@@ -1996,8 +2027,8 @@ async def extract_main_keywords(
                 # 통검 노출된 키워드만 reward_target에 저장
                 # if is_shopping_exposed:  # 주석처리: 통검 노출 여부와 관계없이 모든 키워드 저장
                 # search_url 생성 (네이버 모바일 검색 URL 형식)
-                # acq는 저장된 키워드 중 랜덤 선택 (현재 키워드 포함)
-                search_url = generate_search_url(keyword, all_available_keywords)
+                # acq는 random_acq 테이블에서 랜덤 생성
+                search_url = generate_search_url(keyword, db)
                 
                 # 중복 체크 (같은 nvmid와 keyword 조합이 이미 있는지 확인)
                 # existing_target = db.query(RewardTarget).filter(
@@ -2028,9 +2059,6 @@ async def extract_main_keywords(
                     
                     logger.info(f"[reward_target] 키워드 저장: {keyword} (reward_target_id: {reward_target_id}, nvmid: {request.nvmid}, search_url 길이: {len(search_url)})")
                     
-                    # 저장된 키워드 리스트에 추가 (다음 키워드의 acq 선택에 사용)
-                    all_available_keywords.append(keyword)
-                    
                     saved_rewards.append({
                         "reward_target_id": reward_target_id,
                         "keyword": keyword,
@@ -2046,10 +2074,11 @@ async def extract_main_keywords(
                     db.rollback()
                     logger.error(f"[reward_target] 키워드 '{keyword}' 저장 실패: {e}, search_url 길이: {len(search_url)}", exc_info=True)
                     
-                    # search_url이 너무 긴 경우 acq 없이 재시도
+                    # search_url이 너무 긴 경우 재시도 (기본값 사용)
                     if "Data too long" in str(e) or len(search_url) > 2000:
                         try:
-                            search_url_short = generate_search_url(keyword, [])  # acq 없이 생성
+                            # DB 없이 기본값으로 재시도
+                            search_url_short = generate_search_url(keyword, None)
                             reward_target = RewardTarget(
                                 keyword=keyword,
                                 nvmid=request.nvmid,
@@ -2062,8 +2091,6 @@ async def extract_main_keywords(
                             db.commit()  # 재시도 시 즉시 커밋
                             
                             logger.info(f"[reward_target] 짧은 search_url로 재시도 성공: {keyword} (reward_target_id: {reward_target_id})")
-                            
-                            all_available_keywords.append(keyword)
                             
                             saved_rewards.append({
                                 "reward_target_id": reward_target_id,
