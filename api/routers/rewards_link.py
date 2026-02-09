@@ -737,30 +737,27 @@ async def delete_keyword(
                 detail=f"키워드를 찾을 수 없습니다: {keyword_id}"
             )
         
-        # 키워드 삭제
-        db.delete(keyword)
-        
         # 해당 link_id의 reward_link 레코드 조회
         link = db.query(RewardLink).filter(RewardLink.link_id == link_id).first()
         
-        if link:
-            # 해당 link_id에 연결된 다른 키워드가 있는지 확인
-            remaining_keywords = db.query(RewardLinkKeyword).filter(
-                RewardLinkKeyword.link_id == link_id
-            ).count()
-            
-            # 다른 키워드가 없으면 reward_link 레코드도 삭제
-            if remaining_keywords == 0:
-                logger.info(f"link_id {link_id}에 연결된 키워드가 없어 reward_link 레코드도 삭제합니다.")
-                db.delete(link)
-            else:
-                logger.info(f"link_id {link_id}에 연결된 키워드가 {remaining_keywords}개 남아있어 reward_link 레코드는 유지합니다.")
+        # 키워드 삭제
+        db.delete(keyword)
+        db.flush()  # 키워드 삭제를 즉시 반영
+        logger.info(f"키워드 삭제 완료: keyword_id={keyword_id}, link_id={link_id}")
         
-        db.commit()
+        # 키워드 삭제 시 해당 reward_link 레코드도 함께 삭제
+        if link:
+            db.delete(link)
+            db.flush()  # 링크 삭제를 즉시 반영
+            logger.info(f"reward_link 레코드 삭제 완료: link_id={link_id}")
+        else:
+            logger.warning(f"link_id {link_id}에 해당하는 reward_link 레코드를 찾을 수 없습니다.")
+        
+        db.commit()  # 최종 커밋
         
         return {
             "success": True,
-            "message": "키워드가 삭제되었습니다."
+            "message": "키워드와 링크가 삭제되었습니다."
         }
     
     except HTTPException:
