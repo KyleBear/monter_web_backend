@@ -63,6 +63,7 @@ class KeywordCombination(BaseModel):
 
 class RewardLinkCreate(BaseModel):
     product_name: Optional[str] = None
+    nvmid: Optional[str] = None  # 네이버 상품 ID
     short_link: Optional[str] = None  # 프론트엔드에서 생성한 링크 (선택사항)
     keywords: List[KeywordCombination] = []
     query_list: Optional[List[str]] = None  # query 키워드 리스트
@@ -294,7 +295,7 @@ async def redirect_to_naver(
         
         # 새로운 search_url 생성
         ackey = generate_random_ackey(8)
-        acr = random.randint(0, 10)
+        acr = random.randint(1, 10)
         
         naver_url = (
             f"https://m.search.naver.com/search.naver?"
@@ -412,7 +413,7 @@ async def create_link(
             try:
                 # 각 조합마다 네이버 검색 URL 생성 (reward_link에 저장)
                 ackey = generate_random_ackey(8)
-                acr = random.randint(0, 10)
+                acr = random.randint(1, 10)
                 
                 naver_url = (
                     f"https://m.search.naver.com/search.naver?"
@@ -431,6 +432,7 @@ async def create_link(
                 new_link = RewardLink(
                     short_code=short_code,  # 모두 같은 short_code 사용
                     product_name=link_data.product_name,
+                    nvmid=link_data.nvmid,  # nvmid 추가
                     reward_link=naver_url  # 네이버 검색 URL 저장
                 )
                 db.add(new_link)
@@ -710,13 +712,15 @@ async def add_keyword(
 ):
     """
     키워드 조합 추가 (관리자용)
+    키워드 추가 시 RewardLink 테이블에도 해당 search_url을 추가
     """
     check_admin_permission(current_user, db)
     
     try:
-        link = db.query(RewardLink).filter(RewardLink.link_id == link_id).first()
+        # 기존 link 조회하여 product_name, short_code, nvmid 가져오기
+        existing_link = db.query(RewardLink).filter(RewardLink.link_id == link_id).first()
         
-        if not link:
+        if not existing_link:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"링크를 찾을 수 없습니다: {link_id}"
@@ -730,27 +734,49 @@ async def add_keyword(
                 detail="query 키워드를 입력해주세요."
             )
         
+        # generate_search_url 함수 import
+        from api.routers.keyword_search_api2 import generate_search_url
+        
+        # 키워드로 search_url 생성
+        search_url = generate_search_url(query, db)
+        
         # random_acq 테이블에서 acq 생성
         acq = generate_acq_from_random_table(db)
         
-        # 키워드 조합 추가
+        # 새로운 RewardLink 레코드 생성 (같은 short_code, product_name, nvmid, 새로운 search_url)
+        new_link = RewardLink(
+            short_code=existing_link.short_code,
+            product_name=existing_link.product_name,
+            nvmid=existing_link.nvmid,  # 기존 link의 nvmid 사용
+            reward_link=search_url  # 새로 생성한 search_url
+        )
+        db.add(new_link)
+        db.flush()  # 새로운 link_id를 얻기 위해 flush
+        
+        logger.info(f"새로운 RewardLink 생성: link_id={new_link.link_id}, short_code={existing_link.short_code}, nvmid={existing_link.nvmid}, search_url={search_url[:100]}...")
+        
+        # 키워드 조합 추가 (새로 생성한 link_id 사용)
         keyword = RewardLinkKeyword(
-            link_id=link_id,
-            short_code=link.short_code,
+            link_id=new_link.link_id,  # 새로 생성한 link_id 사용
+            short_code=existing_link.short_code,
             query_keyword=query,
             acq_keyword=acq
         )
         db.add(keyword)
         db.commit()
         db.refresh(keyword)
+        db.refresh(new_link)
         
         return {
             "success": True,
             "message": "키워드가 추가되었습니다.",
             "data": {
+                "link_id": new_link.link_id,
                 "keyword_id": keyword.keyword_id,
                 "query_keyword": keyword.query_keyword,
-                "acq_keyword": keyword.acq_keyword
+                "acq_keyword": keyword.acq_keyword,
+                "nvmid": new_link.nvmid,
+                "search_url": new_link.reward_link
             }
         }
     

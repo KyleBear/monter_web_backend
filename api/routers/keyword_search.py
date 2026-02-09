@@ -70,13 +70,13 @@ class ClientIDRotator:
     
     def get_next(self) -> tuple:
         """다음 Client ID/Secret 반환 (랜덤 선택)"""
-        with self.lock:
+            with self.lock:
             if not self.accounts:
                 raise ValueError("사용 가능한 계정이 없습니다.")
             
             # 실패한 계정 제외하고 사용 가능한 계정만 필터링
             available_accounts = [acc for i, acc in enumerate(self.accounts) 
-                                    if i not in self.failed_accounts]
+                                 if i not in self.failed_accounts]
             
             if not available_accounts:
                 # 모든 계정이 실패한 경우, 실패 목록 초기화 후 재시도
@@ -225,8 +225,8 @@ def get_shopping_rank_with_ad_flag(
                 "X-Naver-Client-Id": client_id,
                 "X-Naver-Client-Secret": client_secret,
             }
-            # API 요청
-            response = requests.get(API_URL, headers=headers, params=params, timeout=10)
+        # API 요청
+        response = requests.get(API_URL, headers=headers, params=params, timeout=10)
             
             # 401 Unauthorized 오류 시 다른 계정으로 재시도
             if response.status_code == 401:
@@ -446,7 +446,7 @@ def check_shopping_rank_for_keyword(
             
             while scroll_attempts < max_scroll_attempts:
                 # 현재 페이지에서 nvmid 찾기 (스크롤 전에 먼저 확인)
-                all_links = driver.find_elements(By.CSS_SELECTOR, 'a[aria-labelledby^="view_type_guide_"]')
+            all_links = driver.find_elements(By.CSS_SELECTOR, 'a[aria-labelledby^="view_type_guide_"]')
             
             for link in all_links:
                 try:
@@ -889,8 +889,8 @@ class BrowserPool:
     """브라우저 풀 - 브라우저 재사용으로 성능 향상"""
     
     def __init__(self, pool_size: int, headless: bool = True):
-        """
-        Args:
+    """
+    Args:
             pool_size: 풀에 생성할 브라우저 개수
             headless: headless 모드 여부
         """
@@ -913,30 +913,30 @@ class BrowserPool:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
         
-        driver = webdriver.Chrome(options=options)
+            driver = webdriver.Chrome(options=options)
             
-        # 모바일 모드 설정
-        try:
-            mobile_user_agent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36"
-            driver.execute_cdp_cmd('Network.setUserAgentOverride', {
-                'userAgent': mobile_user_agent,
-                'acceptLanguage': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-                'platform': 'Linux armv8l'
-            })
-            driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
-                'width': 375,
-                'height': 667,
-                'deviceScaleFactor': 2.0,
-                'mobile': True,
-                'screenOrientation': {'angle': 0, 'type': 'portraitPrimary'}
-            })
-            driver.execute_cdp_cmd('Emulation.setTouchEmulationEnabled', {
-                'enabled': True,
-                'maxTouchPoints': 5
-            })
-        except Exception as e:
-            logger.warning(f"모바일 모드 설정 중 오류 (계속 진행): {e}")
-        
+            # 모바일 모드 설정
+            try:
+                mobile_user_agent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36"
+                driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+                    'userAgent': mobile_user_agent,
+                    'acceptLanguage': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+                    'platform': 'Linux armv8l'
+                })
+                driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
+                    'width': 375,
+                    'height': 667,
+                    'deviceScaleFactor': 2.0,
+                    'mobile': True,
+                    'screenOrientation': {'angle': 0, 'type': 'portraitPrimary'}
+                })
+                driver.execute_cdp_cmd('Emulation.setTouchEmulationEnabled', {
+                    'enabled': True,
+                    'maxTouchPoints': 5
+                })
+            except Exception as e:
+                logger.warning(f"모바일 모드 설정 중 오류 (계속 진행): {e}")
+            
         return driver
     
     def initialize(self):
@@ -953,11 +953,11 @@ class BrowserPool:
                 try:
                     driver = self._create_browser()
                     self.pool.put(driver)
-                except Exception as e:
+        except Exception as e:
                     logger.error(f"브라우저 생성 실패: {e}")
             
-                self._initialized = True
-                logger.info(f"브라우저 풀 초기화 완료 ({self.pool.qsize()}개 브라우저 준비됨)")
+            self._initialized = True
+            logger.info(f"브라우저 풀 초기화 완료 ({self.pool.qsize()}개 브라우저 준비됨)")
     
     @contextmanager
     def get_browser(self):
@@ -991,7 +991,7 @@ class BrowserPool:
                     try:
                         # 브라우저가 살아있는지 확인
                         driver.current_url
-                        driver.get("about:blank")  # 빈 페이지로 이동하여 상태 초기화
+                    driver.get("about:blank")  # 빈 페이지로 이동하여 상태 초기화
                     except Exception as e:
                         # 브라우저가 죽었으면 종료 시도 후 무시
                         logger.debug(f"브라우저 상태 확인 실패 (종료 처리): {e}")
@@ -1033,9 +1033,9 @@ class BrowserPool:
                 try:
                     # 브라우저가 살아있는지 확인
                     driver.current_url
-                    driver.quit()
+                driver.quit()
                     closed_count += 1
-                except Exception as e:
+            except Exception as e:
                     # 이미 종료된 브라우저는 무시
                     logger.debug(f"브라우저가 이미 종료됨: {e}")
                     error_count += 1
@@ -1106,11 +1106,11 @@ def check_exposure_and_cpc_for_keywords(
     logger.info(f"총 {len(keywords)}개 키워드에 대해 {max_workers}개 브라우저 풀로 병렬 조회 시작")
     
     try:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_keyword = {
-                executor.submit(check_single_keyword, keyword): keyword 
-                for keyword in keywords
-            }
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_keyword = {
+            executor.submit(check_single_keyword, keyword): keyword 
+            for keyword in keywords
+        }
     finally:
         # 브라우저 풀 종료
         browser_pool.close_all()

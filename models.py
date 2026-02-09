@@ -19,7 +19,7 @@ class DataSection(Base):
     last_checked = Column(DateTime, comment='마지막 IP 체크 시간')
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
-    
+
 
 # 프록시 IP 테이블
 class ProxyIP(Base):
@@ -154,7 +154,7 @@ class UsersAdmin(Base):
     is_active = Column(Boolean, default=True, comment='계정 활성화 여부')
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
-
+    
 # 사용자 세션 테이블
 class UserSession(Base):
     __tablename__ = 'user_session'
@@ -332,6 +332,7 @@ class RewardLink(Base):
     link_id = Column(BigInteger, primary_key=True, autoincrement=True, comment='링크 ID')
     short_code = Column(String(40), nullable=False, comment='짧은 링크 코드 (예: v8ZSBUT43vj)')
     product_name = Column(String(255), comment='상품명')
+    nvmid = Column(String(100), comment='네이버 상품 ID')
     reward_link = Column(Text, comment='생성된 리다이렉트 링크 (예: https://domain.com/redirect/v8ZSBUT43vj)')
     created_at = Column(DateTime, default=func.now(), comment='생성일시')
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment='수정일시')

@@ -199,7 +199,7 @@ def generate_search_url(keyword: str, db: Session = None) -> str:
     encoded_acq = quote_plus(acq_keyword)
     
     # acr: 0~10 랜덤
-    acr = random.randint(0, 10)
+    acr = random.randint(1, 10)
     
     # search_url 생성
     search_url = (

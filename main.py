@@ -127,7 +127,7 @@ async def public_redirect(
         
         # 새로운 search_url 생성
         ackey = generate_random_ackey(8)
-        acr = random.randint(0, 10)
+        acr = random.randint(1, 10)
         
         naver_url = (
             f"https://m.search.naver.com/search.naver?"
