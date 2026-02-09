@@ -14,7 +14,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from itertools import combinations
-from urllib.parse import quote, urlparse, parse_qs
+from urllib.parse import quote_plus, urlparse, parse_qs
 from dotenv import load_dotenv
 import json
 from datetime import datetime, date
@@ -224,7 +224,7 @@ def get_shopping_rank_with_ad_flag(
             headers = {
                 "X-Naver-Client-Id": client_id,
                 "X-Naver-Client-Secret": client_secret,
-            }        
+            }
             # API 요청
             response = requests.get(API_URL, headers=headers, params=params, timeout=10)
             
@@ -417,7 +417,7 @@ def check_shopping_rank_for_keyword(
     
     try:
         # 네이버 통합검색 URL (모바일)
-        encoded_keyword = quote(keyword)
+        encoded_keyword = quote_plus(keyword)
         search_url = f"https://m.search.naver.com/search.naver?query={encoded_keyword}"
         
         logger.debug(f"통검 페이지 접속: {search_url}")

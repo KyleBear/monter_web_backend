@@ -266,82 +266,48 @@ async def redirect_to_naver(
 ):
     """
     짧은 링크로 접속 시 랜덤 네이버 URL로 리다이렉트
-    short_code에 해당하는 모든 RewardLink 중 랜덤으로 하나를 선택하여 reward_link로 리다이렉트
-    ackey는 소문자로 변환하여 사용
-    acq가 없으면 random_acq 테이블에서 생성하여 추가
+    short_code에 해당하는 RewardLinkKeyword에서 query_keyword를 랜덤으로 선택하여
+    새로운 search_url을 생성하여 리다이렉트
     """
     try:
-        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        from urllib.parse import quote_plus
         
-        # short_code로 모든 RewardLink 레코드 조회 (같은 short_code를 가진 여러 레코드)
-        links = db.query(RewardLink).filter(
-            RewardLink.short_code == short_code
+        # short_code로 RewardLinkKeyword 조회 (같은 short_code를 가진 여러 키워드)
+        keywords = db.query(RewardLinkKeyword).filter(
+            RewardLinkKeyword.short_code == short_code,
+            RewardLinkKeyword.query_keyword.isnot(None),
+            RewardLinkKeyword.query_keyword != ''
         ).all()
         
-        if not links:
+        if not keywords:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"링크를 찾을 수 없습니다: {short_code}"
+                detail=f"키워드를 찾을 수 없습니다: {short_code}"
             )
         
-        # reward_link가 있는 레코드만 필터링
-        valid_links = [link for link in links if link.reward_link and link.reward_link.strip()]
+        # 랜덤으로 하나의 키워드 선택
+        random_keyword = random.choice(keywords)
+        query_keyword = random_keyword.query_keyword
         
-        if not valid_links:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="등록된 네이버 URL이 없습니다."
-            )
+        # random_acq 테이블에서 acq 생성
+        acq = generate_acq_from_random_table(db)
         
-        # 랜덤으로 하나의 레코드 선택
-        random_link = random.choice(valid_links)
-        naver_url = random_link.reward_link.strip()
+        # 새로운 search_url 생성
+        ackey = generate_random_ackey(8)
+        acr = random.randint(0, 10)
         
-        # URL에서 ackey 파라미터 추출 및 소문자로 변환, acq 파라미터 확인 및 추가
-        try:
-            parsed = urlparse(naver_url)
-            params = parse_qs(parsed.query, keep_blank_values=True)
-            
-            # ackey가 있으면 소문자로 변환
-            if 'ackey' in params and params['ackey']:
-                original_ackey = params['ackey'][0]
-                lowercase_ackey = original_ackey.lower()
-                params['ackey'] = [lowercase_ackey]
-                logger.info(f"[리다이렉트] ackey 소문자 변환: {original_ackey} -> {lowercase_ackey}")
-            
-            # acq가 없으면 random_acq 테이블에서 생성하여 추가
-            if 'acq' not in params or not params['acq'] or not params['acq'][0] or params['acq'][0].strip() == '':
-                try:
-                    acq = generate_acq_from_random_table(db)
-                    if acq and acq.strip():
-                        params['acq'] = [acq]
-                        logger.info(f"[리다이렉트] acq 추가: {acq}")
-                    else:
-                        logger.warning(f"[리다이렉트] acq 생성 실패 (빈 값 반환), 기본값 '상품' 사용")
-                        params['acq'] = ['상품']
-                except Exception as acq_error:
-                    logger.error(f"[리다이렉트] acq 생성 중 오류: {acq_error}", exc_info=True)
-                    params['acq'] = ['상품']  # 기본값 사용
-            else:
-                # acq가 있으면 그대로 유지
-                original_acq = params['acq'][0]
-                logger.info(f"[리다이렉트] acq 유지: {original_acq}")
-            
-            # URL 재구성
-            new_query = urlencode(params, doseq=True)
-            naver_url = urlunparse((
-                parsed.scheme,
-                parsed.netloc,
-                parsed.path,
-                parsed.params,
-                new_query,
-                parsed.fragment
-            ))
-                
-        except Exception as e:
-            logger.warning(f"[리다이렉트] URL 파라미터 처리 실패 (원본 URL 사용): {e}")
+        naver_url = (
+            f"https://m.search.naver.com/search.naver?"
+            f"sm=mtp_sug.top&"
+            f"where=m&"
+            f"query={quote_plus(query_keyword)}&"
+            f"ackey={ackey}&"
+            f"acq={quote_plus(acq)}&"
+            f"acr={acr}&"
+            f"qdt=0"
+        )
         
-        logger.info(f"[리다이렉트] short_code={short_code}, 선택된 link_id={random_link.link_id}, 네이버 URL: {naver_url[:100]}...")
+        logger.info(f"[리다이렉트] short_code={short_code}, 선택된 keyword_id={random_keyword.keyword_id}, query='{query_keyword}', 생성된 URL: {naver_url[:100]}...")
         
         # 리다이렉트
         return RedirectResponse(url=naver_url, status_code=302)
@@ -428,7 +394,7 @@ async def create_link(
         logger.info(f"생성된 short_code (공통): {short_code}")
         
         # 네이버 URL 생성을 위한 import
-        from urllib.parse import quote
+        from urllib.parse import quote_plus
         
         # 각 키워드 조합마다 별도의 reward_link 레코드 생성 (모두 같은 short_code 사용)
         created_links = []
@@ -452,9 +418,9 @@ async def create_link(
                     f"https://m.search.naver.com/search.naver?"
                     f"sm=mtp_sug.top&"
                     f"where=m&"
-                    f"query={quote(query)}&"
+                    f"query={quote_plus(query)}&"
                     f"ackey={ackey}&"
-                    f"acq={quote(acq)}&"
+                    f"acq={quote_plus(acq)}&"
                     f"acr={acr}&"
                     f"qdt=0"
                 )

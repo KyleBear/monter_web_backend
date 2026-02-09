@@ -11,7 +11,7 @@ from database import get_db
 from models import RewardRank, UsersAdmin
 from utils.auth_helpers import get_current_user
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import quote_plus
 import random
 import re
 from bs4 import BeautifulSoup
@@ -244,7 +244,7 @@ async def extract_main_keywords(
                         logger.warning(f"키워드 '{keyword}'로 검색한 결과에서 nvmid '{target_nvmid}'를 찾지 못해 첫 번째 결과 사용 (이미지 URL 저장 안함)")
                     
                     # search_url 생성
-                    encoded_keyword = quote(keyword)
+                    encoded_keyword = quote_plus(keyword)
                     search_url = f"https://search.shopping.naver.com/catalog/{request.nvmid}?query={encoded_keyword}"
                     
                     # HTML 태그 제거된 상품명 가져오기

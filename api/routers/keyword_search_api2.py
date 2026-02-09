@@ -14,10 +14,10 @@ try:
 except ImportError:
     # 일반 개발 환경에서는 database 사용
     from database import get_db, SessionLocal
-from models import RewardRank, RewardTarget, UsersAdmin, ProxyIP
+from models import RewardRank, RewardTarget, UsersAdmin, ProxyIP, RewardLink, RewardLinkKeyword
 from utils.auth_helpers import get_current_user
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import quote_plus, urlparse, parse_qs, urlparse, parse_qs
 import random
 import string
 import re
@@ -186,7 +186,7 @@ def generate_search_url(keyword: str, db: Session = None) -> str:
         네이버 모바일 검색 URL
     """
     # query 파라미터: 현재 키워드 사용
-    encoded_keyword = quote(keyword)
+    encoded_keyword = quote_plus(keyword)
     
     # ackey: 영문숫자 8글자 랜덤
     ackey = generate_ackey(8)
@@ -196,7 +196,7 @@ def generate_search_url(keyword: str, db: Session = None) -> str:
         acq_keyword = generate_acq_from_random_table(db)
     else:
         acq_keyword = keyword  # 기본값 (DB 세션이 없을 경우)
-    encoded_acq = quote(acq_keyword)
+    encoded_acq = quote_plus(acq_keyword)
     
     # acr: 0~10 랜덤
     acr = random.randint(0, 10)
