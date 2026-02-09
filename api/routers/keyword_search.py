@@ -70,7 +70,7 @@ class ClientIDRotator:
     
     def get_next(self) -> tuple:
         """다음 Client ID/Secret 반환 (랜덤 선택)"""
-            with self.lock:
+        with self.lock:
             if not self.accounts:
                 raise ValueError("사용 가능한 계정이 없습니다.")
             
@@ -220,13 +220,15 @@ def get_shopping_rank_with_ad_flag(
             
             if not client_id or not client_secret:
                 raise ValueError("유효한 Client ID와 Secret이 없습니다.")
+            
             # HTTP 헤더 설정 (네이버 오픈 API 문서 참고)
             headers = {
                 "X-Naver-Client-Id": client_id,
                 "X-Naver-Client-Secret": client_secret,
             }
-        # API 요청
-        response = requests.get(API_URL, headers=headers, params=params, timeout=10)
+            
+            # API 요청
+            response = requests.get(API_URL, headers=headers, params=params, timeout=10)
             
             # 401 Unauthorized 오류 시 다른 계정으로 재시도
             if response.status_code == 401:
@@ -236,8 +238,8 @@ def get_shopping_rank_with_ad_flag(
                     time.sleep(1)  # 잠시 대기 후 재시도
                     continue
                 else:
-                    raise ValueError("유효한 Client ID와 Secret이 없습니다.")
-        
+                    response.raise_for_status()
+            
             # 429 Too Many Requests 오류 시 다른 계정으로 재시도
             if response.status_code == 429:
                 logger.warning(f"429 Too Many Requests - 계정 {client_id} 제한 초과, 다른 계정으로 재시도...")
@@ -446,56 +448,56 @@ def check_shopping_rank_for_keyword(
             
             while scroll_attempts < max_scroll_attempts:
                 # 현재 페이지에서 nvmid 찾기 (스크롤 전에 먼저 확인)
-            all_links = driver.find_elements(By.CSS_SELECTOR, 'a[aria-labelledby^="view_type_guide_"]')
-            
-            for link in all_links:
-                try:
-                    aria_id = link.get_attribute('aria-labelledby')
-                    if aria_id and aria_id.startswith('view_type_guide_'):
-                        extracted_nvmid = aria_id.replace('view_type_guide_', '')
-                        
-                        if extracted_nvmid == target_nvmid:
-                            found_nvmid = True
+                all_links = driver.find_elements(By.CSS_SELECTOR, 'a[aria-labelledby^="view_type_guide_"]')
+                
+                for link in all_links:
+                    try:
+                        aria_id = link.get_attribute('aria-labelledby')
+                        if aria_id and aria_id.startswith('view_type_guide_'):
+                            extracted_nvmid = aria_id.replace('view_type_guide_', '')
                             
-                            # 광고 여부 확인
-                            try:
-                                # 부모 li 요소 찾기 (XPath 사용)
-                                parent_li = link.find_element(By.XPATH, './ancestor::li[1]')
+                            if extracted_nvmid == target_nvmid:
+                                found_nvmid = True
                                 
-                                # 광고 태그 확인
-                                # 방법 1: pbjVN80V 클래스 확인
+                                # 광고 여부 확인
                                 try:
-                                    parent_li.find_element(By.CSS_SELECTOR, '.pbjVN80V')
-                                    is_ad = True
-                                except:
-                                    pass
-                                
-                                # 방법 2: SucLwbaS 클래스 확인
-                                if not is_ad:
+                                    # 부모 li 요소 찾기 (XPath 사용)
+                                    parent_li = link.find_element(By.XPATH, './ancestor::li[1]')
+                                    
+                                    # 광고 태그 확인
+                                    # 방법 1: pbjVN80V 클래스 확인
                                     try:
-                                        parent_li.find_element(By.CSS_SELECTOR, 'a.SucLwbaS')
+                                        parent_li.find_element(By.CSS_SELECTOR, '.pbjVN80V')
                                         is_ad = True
                                     except:
                                         pass
+                                    
+                                    # 방법 2: SucLwbaS 클래스 확인
+                                    if not is_ad:
+                                        try:
+                                            parent_li.find_element(By.CSS_SELECTOR, 'a.SucLwbaS')
+                                            is_ad = True
+                                        except:
+                                            pass
+                                    
+                                    # 방법 3: "광고" 텍스트를 가진 blind 클래스 span 확인
+                                    if not is_ad:
+                                        try:
+                                            blind_spans = parent_li.find_elements(By.CSS_SELECTOR, 'span.blind')
+                                            for span in blind_spans:
+                                                if '광고' in span.text:
+                                                    is_ad = True
+                                                    break
+                                        except:
+                                            pass
+                                except Exception as e:
+                                    logger.debug(f"광고 여부 확인 중 오류: {e}")
                                 
-                                # 방법 3: "광고" 텍스트를 가진 blind 클래스 span 확인
-                                if not is_ad:
-                                    try:
-                                        blind_spans = parent_li.find_elements(By.CSS_SELECTOR, 'span.blind')
-                                        for span in blind_spans:
-                                            if '광고' in span.text:
-                                                is_ad = True
-                                                break
-                                    except:
-                                        pass
-                            except Exception as e:
-                                logger.debug(f"광고 여부 확인 중 오류: {e}")
-                            
                                 break  # nvmid를 찾았으므로 즉시 종료
-                except Exception as e:
-                    logger.debug(f"링크 처리 중 오류: {e}")
-                    continue
-            
+                    except Exception as e:
+                        logger.debug(f"링크 처리 중 오류: {e}")
+                        continue
+                
                 if found_nvmid:
                     break  # 찾으면 스크롤 중단
                 
@@ -889,8 +891,8 @@ class BrowserPool:
     """브라우저 풀 - 브라우저 재사용으로 성능 향상"""
     
     def __init__(self, pool_size: int, headless: bool = True):
-    """
-    Args:
+        """
+        Args:
             pool_size: 풀에 생성할 브라우저 개수
             headless: headless 모드 여부
         """
@@ -913,10 +915,10 @@ class BrowserPool:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
         
-            driver = webdriver.Chrome(options=options)
-            
-            # 모바일 모드 설정
-            try:
+        driver = webdriver.Chrome(options=options)
+        
+        # 모바일 모드 설정
+        try:
                 mobile_user_agent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36"
                 driver.execute_cdp_cmd('Network.setUserAgentOverride', {
                     'userAgent': mobile_user_agent,
@@ -934,9 +936,9 @@ class BrowserPool:
                     'enabled': True,
                     'maxTouchPoints': 5
                 })
-            except Exception as e:
-                logger.warning(f"모바일 모드 설정 중 오류 (계속 진행): {e}")
-            
+        except Exception as e:
+            logger.warning(f"모바일 모드 설정 중 오류 (계속 진행): {e}")
+        
         return driver
     
     def initialize(self):
@@ -953,7 +955,7 @@ class BrowserPool:
                 try:
                     driver = self._create_browser()
                     self.pool.put(driver)
-        except Exception as e:
+                except Exception as e:
                     logger.error(f"브라우저 생성 실패: {e}")
             
             self._initialized = True
@@ -991,7 +993,7 @@ class BrowserPool:
                     try:
                         # 브라우저가 살아있는지 확인
                         driver.current_url
-                    driver.get("about:blank")  # 빈 페이지로 이동하여 상태 초기화
+                        driver.get("about:blank")  # 빈 페이지로 이동하여 상태 초기화
                     except Exception as e:
                         # 브라우저가 죽었으면 종료 시도 후 무시
                         logger.debug(f"브라우저 상태 확인 실패 (종료 처리): {e}")
@@ -1033,9 +1035,9 @@ class BrowserPool:
                 try:
                     # 브라우저가 살아있는지 확인
                     driver.current_url
-                driver.quit()
+                    driver.quit()
                     closed_count += 1
-            except Exception as e:
+                except Exception as e:
                     # 이미 종료된 브라우저는 무시
                     logger.debug(f"브라우저가 이미 종료됨: {e}")
                     error_count += 1
@@ -1106,11 +1108,27 @@ def check_exposure_and_cpc_for_keywords(
     logger.info(f"총 {len(keywords)}개 키워드에 대해 {max_workers}개 브라우저 풀로 병렬 조회 시작")
     
     try:
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_keyword = {
-            executor.submit(check_single_keyword, keyword): keyword 
-            for keyword in keywords
-        }
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_keyword = {
+                executor.submit(check_single_keyword, keyword): keyword 
+                for keyword in keywords
+            }
+            
+            # 완료된 작업부터 결과 수집
+            for future in as_completed(future_to_keyword):
+                keyword = future_to_keyword[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                    logger.info(f"✓ 키워드 '{keyword}': 통검 노출={result['is_shopping_exposed']}, CPC={result['cpc']}")
+                except Exception as e:
+                    logger.error(f"키워드 '{keyword}' 처리 중 예외: {e}")
+                    results.append({
+                        "keyword": keyword,
+                        "is_shopping_exposed": False,
+                        "cpc": False,
+                        "error": str(e)
+                    })
     finally:
         # 브라우저 풀 종료
         browser_pool.close_all()
