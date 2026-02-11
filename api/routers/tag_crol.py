@@ -725,8 +725,10 @@ def create_search_url_with_params(keyword: str, ackey: str = None, acq: str = No
     if not acq:
         acq = generate_acq_from_random_table(db)
     
-    encoded_query = quote_plus(keyword)
-    encoded_acq = quote_plus(acq)
+    # encoded_query = quote_plus(keyword)
+    # encoded_acq = quote_plus(acq)
+    encoded_query = keyword
+    encoded_acq = acq
     
     # 쇼핑 검색 결과를 위한 URL 생성 (where=shopping 추가)
     url = f"https://m.search.naver.com/search.naver?sm=mtp_sug.top&where=shopping&query={encoded_query}&ackey={ackey}&acq={encoded_acq}&acr={acr}&qdt={qdt}"

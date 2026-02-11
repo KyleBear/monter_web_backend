@@ -186,7 +186,8 @@ def generate_search_url(keyword: str, db: Session = None) -> str:
         네이버 모바일 검색 URL
     """
     # query 파라미터: 현재 키워드 사용
-    encoded_keyword = quote_plus(keyword)
+    # encoded_keyword = quote_plus(keyword)
+    encoded_keyword = keyword
     
     # ackey: 영문숫자 8글자 랜덤
     ackey = generate_ackey(8)
@@ -196,7 +197,8 @@ def generate_search_url(keyword: str, db: Session = None) -> str:
         acq_keyword = generate_acq_from_random_table(db)
     else:
         acq_keyword = keyword  # 기본값 (DB 세션이 없을 경우)
-    encoded_acq = quote_plus(acq_keyword)
+    # encoded_acq = quote_plus(acq_keyword)
+    encoded_acq = acq_keyword
     
     # acr: 0~10 랜덤
     acr = random.randint(1, 10)

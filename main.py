@@ -133,9 +133,11 @@ async def public_redirect(
             f"https://m.search.naver.com/search.naver?"
             f"sm=mtp_sug.top&"
             f"where=m&"
-            f"query={quote_plus(query_keyword)}&"
+            # f"query={quote_plus(query_keyword)}&"
+            f"query={query_keyword}&"
             f"ackey={ackey}&"
-            f"acq={quote_plus(acq)}&"
+            # f"acq={quote_plus(acq)}&"
+            f"acq={acq}&"
             f"acr={acr}&"
             f"qdt=0"
         )

@@ -244,7 +244,8 @@ async def extract_main_keywords(
                         logger.warning(f"키워드 '{keyword}'로 검색한 결과에서 nvmid '{target_nvmid}'를 찾지 못해 첫 번째 결과 사용 (이미지 URL 저장 안함)")
                     
                     # search_url 생성
-                    encoded_keyword = quote_plus(keyword)
+                    # encoded_keyword = quote_plus(keyword)
+                    encoded_keyword = keyword
                     search_url = f"https://search.shopping.naver.com/catalog/{request.nvmid}?query={encoded_keyword}"
                     
                     # HTML 태그 제거된 상품명 가져오기
