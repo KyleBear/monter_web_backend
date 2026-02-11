@@ -948,9 +948,12 @@ def create_missing_keywords_and_search_url(link_id: int, db, browser_pool: Brows
         
         # 5-4. 통검 통과 키워드만 저장 (최대 100개)
         for exposure_data in exposure_results[:max_keywords]:
+            # DB 저장 시에만 띄어쓰기를 +로 변환
+            query_keyword_for_db = exposure_data['query_keyword'].replace(' ', '+')
+            
             keywords_to_add.append({
                 'link_id': link_id,
-                'query_keyword': exposure_data['query_keyword'],
+                'query_keyword': query_keyword_for_db,  # 띄어쓰기를 +로 변환하여 저장
                 'acq_keyword': exposure_data['acq_keyword'],
                 'short_code': short_code
             })
@@ -971,9 +974,9 @@ def create_missing_keywords_and_search_url(link_id: int, db, browser_pool: Brows
                 db.bulk_insert_mappings(RewardLinkKeyword, keywords_to_add)
                 db.commit()
                 if created_count >= min_keywords:
-                    logger.info(f"link_id={link_id}: 총 {len(keywords_to_add)}개 RewardLinkKeyword bulk insert 완료 (순위 조회: {rank_checked_count}개, 통검 검사: {exposure_checked_count}개, 목표 달성: 최소 {min_keywords}개 이상)")
+                    logger.info(f"link_id={link_id}: 총 {len(keywords_to_add)}개 RewardLinkKeyword bulk insert 완료 (띄어쓰기를 +로 변환하여 저장, 순위 조회: {rank_checked_count}개, 통검 검사: {exposure_checked_count}개, 목표 달성: 최소 {min_keywords}개 이상)")
                 else:
-                    logger.warning(f"link_id={link_id}: 총 {len(keywords_to_add)}개 RewardLinkKeyword bulk insert 완료 (순위 조회: {rank_checked_count}개, 통검 검사: {exposure_checked_count}개, 목표 미달: 최소 {min_keywords}개 미만)")
+                    logger.warning(f"link_id={link_id}: 총 {len(keywords_to_add)}개 RewardLinkKeyword bulk insert 완료 (띄어쓰기를 +로 변환하여 저장, 순위 조회: {rank_checked_count}개, 통검 검사: {exposure_checked_count}개, 목표 미달: 최소 {min_keywords}개 미만)")
             except Exception as e:
                 db.rollback()
                 logger.error(f"link_id={link_id}: bulk insert 실패: {e}", exc_info=True)
