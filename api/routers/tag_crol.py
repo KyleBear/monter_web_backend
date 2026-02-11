@@ -690,7 +690,7 @@ def generate_acq_from_random_table(db: SessionLocal = None) -> str:
             selected_adj_word = random.choice([w[0] for w in adj_words])
             
             # acq_word + adj_word 형식으로 조합
-            acq = f"{selected_acq_word} {selected_adj_word}"
+            acq = f"{selected_acq_word}{selected_adj_word}"
             
             logger.info(f"[acq 생성] random_acq 테이블에서 생성: '{selected_acq_word}' + '{selected_adj_word}' = '{acq}'")
             return acq

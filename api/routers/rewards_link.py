@@ -128,7 +128,7 @@ def generate_acq_from_random_table(db: Session) -> str:
         selected_adj_word = random.choice([w[0] for w in adj_words])
         
         # acq_word + adj_word 형식으로 조합
-        acq = f"{selected_acq_word} {selected_adj_word}"
+        acq = f"{selected_acq_word}{selected_adj_word}"
         
         logger.info(f"[acq 생성] random_acq 테이블에서 생성: '{selected_acq_word}' + '{selected_adj_word}' = '{acq}'")
         return acq
@@ -271,8 +271,6 @@ async def redirect_to_naver(
     새로운 search_url을 생성하여 리다이렉트
     """
     try:
-        from urllib.parse import quote_plus
-        
         # short_code로 RewardLinkKeyword 조회 (같은 short_code를 가진 여러 키워드)
         keywords = db.query(RewardLinkKeyword).filter(
             RewardLinkKeyword.short_code == short_code,
@@ -301,10 +299,8 @@ async def redirect_to_naver(
             f"https://m.search.naver.com/search.naver?"
             f"sm=mtp_sug.top&"
             f"where=m&"
-            # f"query={quote_plus(query_keyword)}&"
             f"query={query_keyword}&"
             f"ackey={ackey}&"
-            # f"acq={quote_plus(acq)}&"
             f"acq={acq}&"
             f"acr={acr}&"
             f"qdt=0"
@@ -396,9 +392,6 @@ async def create_link(
         
         logger.info(f"생성된 short_code (공통): {short_code}")
         
-        # 네이버 URL 생성을 위한 import
-        from urllib.parse import quote_plus
-        
         # 각 키워드 조합마다 별도의 reward_link 레코드 생성 (모두 같은 short_code 사용)
         created_links = []
         saved_keywords = []
@@ -421,10 +414,8 @@ async def create_link(
                     f"https://m.search.naver.com/search.naver?"
                     f"sm=mtp_sug.top&"
                     f"where=m&"
-                    # f"query={quote_plus(query)}&"
                     f"query={query}&"
                     f"ackey={ackey}&"
-                    # f"acq={quote_plus(acq)}&"
                     f"acq={acq}&"
                     f"acr={acr}&"
                     f"qdt=0"

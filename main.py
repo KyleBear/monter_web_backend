@@ -101,7 +101,6 @@ async def public_redirect(
     예: http://localhost:3000/redirect/CTTPA2YI1x
     """
     try:
-        from urllib.parse import quote_plus
         from models import RewardLinkKeyword
         from api.routers.rewards_link import generate_acq_from_random_table, generate_random_ackey
         
@@ -133,16 +132,14 @@ async def public_redirect(
             f"https://m.search.naver.com/search.naver?"
             f"sm=mtp_sug.top&"
             f"where=m&"
-            # f"query={quote_plus(query_keyword)}&"
             f"query={query_keyword}&"
             f"ackey={ackey}&"
-            # f"acq={quote_plus(acq)}&"
             f"acq={acq}&"
             f"acr={acr}&"
             f"qdt=0"
         )
         
-        logger.info(f"[공개 리다이렉트] short_code={short_code}, 선택된 keyword_id={random_keyword.keyword_id}, query='{query_keyword}', 생성된 URL: {naver_url[:100]}...")
+        logger.info(f"[공개 리다이렉트] short_code={short_code}, 선택된 keyword_id={random_keyword.keyword_id}, query='{query_keyword}', acq='{acq}', 생성된 URL: {naver_url[:150]}...")
         
         # 리다이렉트
         return RedirectResponse(url=naver_url, status_code=302)
