@@ -14,11 +14,14 @@ from database import get_db, SessionLocal
 from models import RewardLink, RewardLinkKeyword, UsersAdmin, RandomAcq
 from utils.auth_helpers import get_current_user
 from datetime import datetime
+from typing import Tuple
 import random
 import string
 import logging
 import sys
 import os
+import threading
+import time
 
 # reward_keysearch 모듈 import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -27,6 +30,53 @@ from sellution_rank3 import BrowserPool
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# ✅ RandomAcq 데이터 캐시 (5분 TTL)
+_random_acq_cache = {
+    'acq_words': [],
+    'adj_words': [],
+    'last_update': 0,
+    'cache_ttl': 300,  # 5분
+    'lock': threading.Lock()
+}
+
+def _get_cached_random_acq_data(db: Session) -> Tuple[list, list]:
+    """캐시된 RandomAcq 데이터 반환 (5분 TTL)"""
+    current_time = time.time()
+    
+    with _random_acq_cache['lock']:
+        # 캐시 갱신 필요 여부 확인
+        if (current_time - _random_acq_cache['last_update'] > _random_acq_cache['cache_ttl'] or
+            not _random_acq_cache['acq_words'] or
+            not _random_acq_cache['adj_words']):
+            
+            try:
+                # ✅ DISTINCT로 중복 제거하여 조회 (한 번만)
+                acq_words = db.query(RandomAcq.acq_word).filter(
+                    RandomAcq.acq_word.isnot(None),
+                    RandomAcq.acq_word != ''
+                ).distinct().all()
+                
+                adj_words = db.query(RandomAcq.adj_word).filter(
+                    RandomAcq.adj_word.isnot(None),
+                    RandomAcq.adj_word != ''
+                ).distinct().all()
+                
+                _random_acq_cache['acq_words'] = [w[0] for w in acq_words if w[0]]
+                _random_acq_cache['adj_words'] = [w[0] for w in adj_words if w[0]]
+                _random_acq_cache['last_update'] = current_time
+                
+                logger.debug(f"[acq 캐시] 갱신 완료: acq_words={len(_random_acq_cache['acq_words'])}, adj_words={len(_random_acq_cache['adj_words'])}")
+            
+            except Exception as e:
+                logger.error(f"[acq 캐시] 갱신 오류: {e}", exc_info=True)
+                # 기본값 설정
+                if not _random_acq_cache['acq_words']:
+                    _random_acq_cache['acq_words'] = ['상품']
+                if not _random_acq_cache['adj_words']:
+                    _random_acq_cache['adj_words'] = ['']
+        
+        return _random_acq_cache['acq_words'], _random_acq_cache['adj_words']
 
 
 # Admin 권한 체크 함수
@@ -145,6 +195,7 @@ def generate_short_code(length: int = 10) -> str:
 def generate_acq_from_random_table(db: Session) -> str:
     """
     random_acq 테이블에서 acq_word와 adj_word를 랜덤으로 선택하여 acq 생성
+    성능 최적화: 캐싱 사용 (5분 TTL)
     
     Args:
         db: DB 세션
@@ -153,34 +204,27 @@ def generate_acq_from_random_table(db: Session) -> str:
         str: 생성된 acq (acq_word + adj_word 형식)
     """
     try:
-        # random_acq 테이블에서 랜덤으로 acq_word와 adj_word 각각 선택
-        acq_words = db.query(RandomAcq.acq_word).filter(
-            RandomAcq.acq_word.isnot(None),
-            RandomAcq.acq_word != ''
-        ).all()
-        
-        adj_words = db.query(RandomAcq.adj_word).filter(
-            RandomAcq.adj_word.isnot(None),
-            RandomAcq.adj_word != ''
-        ).all()
+        # ✅ 캐시에서 데이터 가져오기
+        acq_words, adj_words = _get_cached_random_acq_data(db)
         
         if not acq_words or not adj_words:
             logger.warning("[acq 생성] random_acq 테이블에 데이터가 없습니다. 기본값 사용.")
-            return "상품"  # 기본값
+            return "상품"
         
-        # 랜덤 선택
-        selected_acq_word = random.choice([w[0] for w in acq_words])
-        selected_adj_word = random.choice([w[0] for w in adj_words])
+        # ✅ 메모리에서 랜덤 선택 (매우 빠름)
+        selected_acq_word = random.choice(acq_words)
+        selected_adj_word = random.choice(adj_words)
         
         # acq_word + adj_word 형식으로 조합
         acq = f"{selected_acq_word}{selected_adj_word}"
         
-        logger.info(f"[acq 생성] random_acq 테이블에서 생성: '{selected_acq_word}' + '{selected_adj_word}' = '{acq}'")
+        # ✅ 로깅 레벨을 DEBUG로 변경 (성능 향상)
+        logger.debug(f"[acq 생성] '{selected_acq_word}' + '{selected_adj_word}' = '{acq}'")
         return acq
         
     except Exception as e:
         logger.error(f"[acq 생성] 오류: {e}", exc_info=True)
-        return "상품"  # 기본값
+        return "상품"
 
 
 def generate_random_ackey(length: int = 8) -> str:
