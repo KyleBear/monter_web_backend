@@ -130,7 +130,8 @@ def get_shopping_rank_with_ad_flag(
     start: int = 1,
     sort: str = "sim",
     filter: Optional[str] = None,
-    exclude: Optional[str] = None
+    exclude: Optional[str] = None,
+    account_index: Optional[int] = None
 ) -> List[Dict]:
     """
     네이버 오픈 API를 사용하여 쇼핑 검색 결과 조회
@@ -142,6 +143,7 @@ def get_shopping_rank_with_ad_flag(
         sort: 정렬 방법 (sim: 정확도순, date: 날짜순, asc: 가격 오름차순, dsc: 가격 내림차순)
         filter: 검색 결과에 포함할 상품 유형 (None: 모든 상품, "naverpay": 네이버페이 연동 상품)
         exclude: 검색 결과에서 제외할 상품 유형 (예: "used", "rental", "cbshop" 또는 "used:cbshop" 등)
+        account_index: 사용할 계정 인덱스 (0-based, None이면 rotation)
     
     Returns:
         list: 검색 결과 리스트
@@ -208,15 +210,19 @@ def get_shopping_rank_with_ad_flag(
     if exclude:
         params["exclude"] = exclude
     
-    # Client ID Rotation: 여러 계정을 순환 사용
+    # Client ID 선택: account_index가 지정되면 해당 계정 사용, 아니면 rotation
     max_retries = len(NAVER_ACCOUNTS) if NAVER_ACCOUNTS else 1
     last_error = None
     response = None
     
     for attempt in range(max_retries):
         try:
-            # 다음 계정 가져오기 (rotation)
-            client_id, client_secret = client_rotator.get_next()
+            # account_index가 지정되면 해당 계정 사용, 아니면 rotation
+            if account_index is not None and 0 <= account_index < len(NAVER_ACCOUNTS):
+                client_id, client_secret = NAVER_ACCOUNTS[account_index]
+            else:
+                # 다음 계정 가져오기 (rotation)
+                client_id, client_secret = client_rotator.get_next()
             
             if not client_id or not client_secret:
                 raise ValueError("유효한 Client ID와 Secret이 없습니다.")

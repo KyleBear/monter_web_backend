@@ -16,7 +16,7 @@ echo =================================
 echo.
 
 REM 백엔드 서버 시작 (새 창)
-start "Monter Backend" cmd /k "cd /d C:\Users\dev\Desktop\monter_web_backend && python main.py"
+start "Monter Backend" cmd /k "cd /d C:\Users\dev\Desktop\monter_web_backend && python main.py --workers 4"
 
 REM 잠시 대기 (백엔드 서버 시작 시간 확보)
 timeout /t 3 /nobreak >nul

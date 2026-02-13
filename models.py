@@ -359,3 +359,18 @@ class RandomAcq(Base):
     acq_word = Column(String(50), nullable=False, comment='ACQ 단어')
     adj_word = Column(String(50), nullable=False, comment='형용사 단어')
     
+
+# 랜덤 ACKEY/ACQ 테이블 (ackey/acq 수집용)
+class RandomAckeyAcq(Base):
+    __tablename__ = 'random_ackey_acq'
+    
+    random_key_queue_id = Column(BigInteger, primary_key=True, autoincrement=True, comment='랜덤 키 큐 ID')
+    keyword = Column(String(100), comment='검색 키워드 (쿼리값)')
+    acq = Column(String(100), comment='ACQ 값')
+    ackey = Column(String(100), comment='ACKEY 값')
+    created_at = Column(DateTime, default=func.now(), comment='생성일시')
+    
+    __table_args__ = (
+        Index('idx_keyword_acq_ackey', 'keyword', 'acq', 'ackey'),  # 중복 체크용 인덱스
+    )
+

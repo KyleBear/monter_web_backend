@@ -12,6 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 import atexit
 import logging
 import random
+import time
 
 # API 라우터 임포트
 from api.routers import auth, accounts, advertisements, settlements, notices, rewards, rewards_link
@@ -100,16 +101,16 @@ async def public_redirect(
     새로운 search_url을 생성하여 리다이렉트
     예: http://localhost:3000/redirect/CTTPA2YI1x
     """
+    t1 = time.time()
+    
     try:
         from models import RewardLinkKeyword
-        from api.routers.rewards_link import generate_acq_from_random_table, generate_random_ackey
+        from api.routers.rewards_link import generate_acq_from_random_table, generate_random_ackey, get_cached_keywords
         
-        # short_code로 RewardLinkKeyword 조회 (같은 short_code를 가진 여러 키워드)
-        keywords = db.query(RewardLinkKeyword).filter(
-            RewardLinkKeyword.short_code == short_code,
-            RewardLinkKeyword.query_keyword.isnot(None),
-            RewardLinkKeyword.query_keyword != ''
-        ).all()
+        # 1. 키워드 조회 (캐시 사용)
+        keywords = get_cached_keywords(short_code, db)
+        t2 = time.time()
+        logger.info(f"[공개 리다이렉트 성능] 키워드 조회: {(t2-t1)*1000:.2f}ms")
         
         if not keywords:
             raise HTTPException(
@@ -123,6 +124,8 @@ async def public_redirect(
         
         # random_acq 테이블에서 acq 생성
         acq = generate_acq_from_random_table(db)
+        t3 = time.time()
+        logger.info(f"[공개 리다이렉트 성능] ACQ 생성: {(t3-t2)*1000:.2f}ms")
         
         # 새로운 search_url 생성
         ackey = generate_random_ackey(8)
@@ -139,6 +142,9 @@ async def public_redirect(
             f"qdt=0"
         )
         
+        t4 = time.time()
+        logger.info(f"[공개 리다이렉트 성능] URL 생성: {(t4-t3)*1000:.2f}ms")
+        logger.info(f"[공개 리다이렉트 성능] 전체: {(t4-t1)*1000:.2f}ms")
         logger.info(f"[공개 리다이렉트] short_code={short_code}, 선택된 keyword_id={random_keyword.keyword_id}, query='{query_keyword}', acq='{acq}', 생성된 URL: {naver_url[:150]}...")
         
         # 리다이렉트
@@ -255,6 +261,7 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8001,
         # reload=True  # 개발 모드: 코드 변경 시 자동 재시작
+        limit_concurrency=100,
         workers=4, 
         reload=False  # 개발 모드: 코드 변경 시 자동 재시작
     )

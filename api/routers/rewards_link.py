@@ -40,43 +40,110 @@ _random_acq_cache = {
     'lock': threading.Lock()
 }
 
-def _get_cached_random_acq_data(db: Session) -> Tuple[list, list]:
-    """캐시된 RandomAcq 데이터 반환 (5분 TTL)"""
+# ✅ 키워드 조회 캐시 (short_code별, 5분 TTL)
+_keywords_cache = {
+    'data': {},  # {short_code: [keywords_list]}
+    'last_update': {},  # {short_code: timestamp}
+    'cache_ttl': 300,  # 5분
+    'lock': threading.Lock()
+}
+
+def get_cached_keywords(short_code: str, db: Session) -> List[RewardLinkKeyword]:
+    """
+    캐시된 키워드 조회 (short_code별, 5분 TTL) - 락 최적화
+    Double-checked locking 패턴으로 락 경합 최소화
+    """
     current_time = time.time()
     
-    with _random_acq_cache['lock']:
-        # 캐시 갱신 필요 여부 확인
-        if (current_time - _random_acq_cache['last_update'] > _random_acq_cache['cache_ttl'] or
-            not _random_acq_cache['acq_words'] or
-            not _random_acq_cache['adj_words']):
-            
-            try:
-                # ✅ DISTINCT로 중복 제거하여 조회 (한 번만)
-                acq_words = db.query(RandomAcq.acq_word).filter(
-                    RandomAcq.acq_word.isnot(None),
-                    RandomAcq.acq_word != ''
-                ).distinct().all()
-                
-                adj_words = db.query(RandomAcq.adj_word).filter(
-                    RandomAcq.adj_word.isnot(None),
-                    RandomAcq.adj_word != ''
-                ).distinct().all()
-                
-                _random_acq_cache['acq_words'] = [w[0] for w in acq_words if w[0]]
-                _random_acq_cache['adj_words'] = [w[0] for w in adj_words if w[0]]
-                _random_acq_cache['last_update'] = current_time
-                
-                logger.debug(f"[acq 캐시] 갱신 완료: acq_words={len(_random_acq_cache['acq_words'])}, adj_words={len(_random_acq_cache['adj_words'])}")
-            
-            except Exception as e:
-                logger.error(f"[acq 캐시] 갱신 오류: {e}", exc_info=True)
-                # 기본값 설정
-                if not _random_acq_cache['acq_words']:
-                    _random_acq_cache['acq_words'] = ['상품']
-                if not _random_acq_cache['adj_words']:
-                    _random_acq_cache['adj_words'] = ['']
+    # ✅ 1단계: 락 없이 캐시 유효성 확인
+    if (short_code in _keywords_cache['data'] and 
+        short_code in _keywords_cache['last_update'] and
+        current_time - _keywords_cache['last_update'][short_code] <= _keywords_cache['cache_ttl']):
+        # 캐시가 유효하면 바로 반환 (락 없이!)
+        return _keywords_cache['data'][short_code]
+    
+    # ✅ 2단계: 캐시 만료 시에만 락 잡고 갱신
+    with _keywords_cache['lock']:
+        # Double-check: 다른 스레드가 이미 갱신했을 수 있음
+        if (short_code in _keywords_cache['data'] and 
+            short_code in _keywords_cache['last_update'] and
+            current_time - _keywords_cache['last_update'][short_code] <= _keywords_cache['cache_ttl']):
+            return _keywords_cache['data'][short_code]
         
+        # 캐시 갱신 필요 - DB 조회
+        try:
+            keywords = db.query(RewardLinkKeyword).filter(
+                RewardLinkKeyword.short_code == short_code,
+                RewardLinkKeyword.query_keyword.isnot(None),
+                RewardLinkKeyword.query_keyword != ''
+            ).order_by(RewardLinkKeyword.keyword_id).all()
+            
+            # 캐시에 저장
+            _keywords_cache['data'][short_code] = keywords
+            _keywords_cache['last_update'][short_code] = current_time
+            
+            logger.debug(f"[키워드 캐시] 갱신 완료: short_code={short_code}, 키워드 수={len(keywords)}")
+        
+        except Exception as e:
+            logger.error(f"[키워드 캐시] 갱신 오류: {e}", exc_info=True)
+            # 오류 시 빈 리스트 반환
+            _keywords_cache['data'][short_code] = []
+            _keywords_cache['last_update'][short_code] = current_time
+    
+    return _keywords_cache['data'].get(short_code, [])
+
+
+def _get_cached_random_acq_data(db: Session) -> Tuple[list, list]:
+    """
+    캐시된 RandomAcq 데이터 반환 (5분 TTL) - 락 최적화
+    Double-checked locking 패턴으로 락 경합 최소화
+    """
+    current_time = time.time()
+    
+    # ✅ 1단계: 락 없이 캐시 유효성 확인 (대부분의 경우 여기서 반환)
+    if (_random_acq_cache['last_update'] > 0 and 
+        current_time - _random_acq_cache['last_update'] <= _random_acq_cache['cache_ttl'] and
+        _random_acq_cache['acq_words'] and 
+        _random_acq_cache['adj_words']):
+        # 캐시가 유효하면 바로 반환 (락 없이!)
         return _random_acq_cache['acq_words'], _random_acq_cache['adj_words']
+    
+    # ✅ 2단계: 캐시 만료 시에만 락 잡고 갱신
+    with _random_acq_cache['lock']:
+        # Double-check: 다른 스레드가 이미 갱신했을 수 있음
+        if (current_time - _random_acq_cache['last_update'] <= _random_acq_cache['cache_ttl'] and
+            _random_acq_cache['acq_words'] and 
+            _random_acq_cache['adj_words']):
+            return _random_acq_cache['acq_words'], _random_acq_cache['adj_words']
+        
+        # 캐시 갱신 필요
+        try:
+            # ✅ DISTINCT로 중복 제거하여 조회 (한 번만)
+            acq_words = db.query(RandomAcq.acq_word).filter(
+                RandomAcq.acq_word.isnot(None),
+                RandomAcq.acq_word != ''
+            ).distinct().all()
+            
+            adj_words = db.query(RandomAcq.adj_word).filter(
+                RandomAcq.adj_word.isnot(None),
+                RandomAcq.adj_word != ''
+            ).distinct().all()
+            
+            _random_acq_cache['acq_words'] = [w[0] for w in acq_words if w[0]]
+            _random_acq_cache['adj_words'] = [w[0] for w in adj_words if w[0]]
+            _random_acq_cache['last_update'] = current_time
+            
+            logger.debug(f"[acq 캐시] 갱신 완료: acq_words={len(_random_acq_cache['acq_words'])}, adj_words={len(_random_acq_cache['adj_words'])}")
+        
+        except Exception as e:
+            logger.error(f"[acq 캐시] 갱신 오류: {e}", exc_info=True)
+            # 기본값 설정
+            if not _random_acq_cache['acq_words']:
+                _random_acq_cache['acq_words'] = ['상품']
+            if not _random_acq_cache['adj_words']:
+                _random_acq_cache['adj_words'] = ['']
+    
+    return _random_acq_cache['acq_words'], _random_acq_cache['adj_words']
 
 
 # Admin 권한 체크 함수
@@ -359,13 +426,14 @@ async def redirect_to_naver(
     short_code에 해당하는 RewardLinkKeyword에서 query_keyword를 랜덤으로 선택하여
     새로운 search_url을 생성하여 리다이렉트
     """
+    t1 = time.time()
+    
     try:
-        # short_code로 RewardLinkKeyword 조회 (같은 short_code를 가진 여러 키워드, keyword_id 순서로 정렬)
-        keywords = db.query(RewardLinkKeyword).filter(
-            RewardLinkKeyword.short_code == short_code,
-            RewardLinkKeyword.query_keyword.isnot(None),
-            RewardLinkKeyword.query_keyword != ''
-        ).order_by(RewardLinkKeyword.keyword_id).all()
+        # 1. 키워드 조회 (캐시 사용)
+        keywords = get_cached_keywords(short_code, db)
+        
+        t2 = time.time()
+        logger.info(f"[리다이렉트 성능] 키워드 조회: {(t2-t1)*1000:.2f}ms")
         
         if not keywords:
             raise HTTPException(
@@ -377,10 +445,12 @@ async def redirect_to_naver(
         random_keyword = random.choice(keywords)
         query_keyword = random_keyword.query_keyword
         
-        # random_acq 테이블에서 acq 생성
+        # 2. ACQ 생성
         acq = generate_acq_from_random_table(db)
+        t3 = time.time()
+        logger.info(f"[리다이렉트 성능] ACQ 생성: {(t3-t2)*1000:.2f}ms")
         
-        # 새로운 search_url 생성
+        # 3. URL 생성 및 리다이렉트
         ackey = generate_random_ackey(8)
         acr = random.randint(1, 10)
         
@@ -395,6 +465,9 @@ async def redirect_to_naver(
             f"qdt=0"
         )
         
+        t4 = time.time()
+        logger.info(f"[리다이렉트 성능] URL 생성: {(t4-t3)*1000:.2f}ms")
+        logger.info(f"[리다이렉트 성능] 전체: {(t4-t1)*1000:.2f}ms")
         logger.info(f"[리다이렉트] short_code={short_code}, 선택된 keyword_id={random_keyword.keyword_id}, query='{query_keyword}', 생성된 URL: {naver_url[:100]}...")
         
         # 리다이렉트
