@@ -11,7 +11,7 @@ from sqlalchemy import desc, func
 from pydantic import BaseModel
 from typing import Optional, List
 from database import get_db, SessionLocal
-from models import RewardLink, RewardLinkKeyword, UsersAdmin, RandomAcq
+from models import RewardLink, RewardLinkKeyword, UsersAdmin, RandomAcq, RandomAckeyAcq
 from utils.auth_helpers import get_current_user
 from datetime import datetime
 from typing import Tuple
@@ -300,6 +300,41 @@ def generate_random_ackey(length: int = 8) -> str:
     return ''.join(random.choice(chars) for _ in range(length))
 
 
+def get_random_ackey_from_table(db: Session) -> Optional[str]:
+    """
+    random_ackey_acq 테이블에서 random_key_queue_id <= 255인 레코드 중 랜덤으로 ackey 가져오기
+    
+    Args:
+        db: DB 세션
+    
+    Returns:
+        str or None: ackey 값 (없으면 None)
+    """
+    try:
+        # random_key_queue_id <= 255인 레코드 중 랜덤으로 선택
+        records = db.query(RandomAckeyAcq).filter(
+            RandomAckeyAcq.random_key_queue_id <= 255,
+            RandomAckeyAcq.ackey.isnot(None),
+            RandomAckeyAcq.ackey != ''
+        ).all()
+        
+        if not records:
+            logger.warning("random_ackey_acq 테이블에 random_key_queue_id <= 255인 레코드가 없습니다.")
+            return None
+        
+        # 랜덤으로 하나 선택
+        selected = random.choice(records)
+        ackey = selected.ackey
+        
+        logger.debug(f"[ackey 조회] random_key_queue_id={selected.random_key_queue_id}, ackey={ackey}")
+        
+        return ackey
+        
+    except Exception as e:
+        logger.error(f"[ackey 조회] 오류: {e}", exc_info=True)
+        return None
+
+
 # ==================== API 엔드포인트 ====================
 
 @router.get("/links")
@@ -445,13 +480,19 @@ async def redirect_to_naver(
         random_keyword = random.choice(keywords)
         query_keyword = random_keyword.query_keyword
         
-        # 2. ACQ 생성
+        # 2. ACQ 생성 (기존대로 random_acq 테이블에서)
         acq = generate_acq_from_random_table(db)
         t3 = time.time()
         logger.info(f"[리다이렉트 성능] ACQ 생성: {(t3-t2)*1000:.2f}ms")
         
-        # 3. URL 생성 및 리다이렉트
-        ackey = generate_random_ackey(8)
+        # 3. ACKEY 생성 (random_ackey_acq 테이블에서 가져오기)
+        ackey = get_random_ackey_from_table(db)
+        
+        # ackey가 없으면 랜덤 생성 (fallback)
+        if not ackey:
+            ackey = generate_random_ackey(8)
+            logger.warning("random_ackey_acq 테이블에서 ackey를 가져오지 못해 랜덤 생성")
+        
         acr = random.randint(1, 10)
         
         naver_url = (

@@ -122,13 +122,21 @@ async def public_redirect(
         random_keyword = random.choice(keywords)
         query_keyword = random_keyword.query_keyword
         
-        # random_acq 테이블에서 acq 생성
+        # random_acq 테이블에서 acq 생성 (기존대로)
         acq = generate_acq_from_random_table(db)
         t3 = time.time()
         logger.info(f"[공개 리다이렉트 성능] ACQ 생성: {(t3-t2)*1000:.2f}ms")
         
+        # random_ackey_acq 테이블에서 ackey 가져오기
+        from api.routers.rewards_link import get_random_ackey_from_table
+        ackey = get_random_ackey_from_table(db)
+        
+        # ackey가 없으면 랜덤 생성 (fallback)
+        if not ackey:
+            ackey = generate_random_ackey(8)
+            logger.warning("random_ackey_acq 테이블에서 ackey를 가져오지 못해 랜덤 생성")
+        
         # 새로운 search_url 생성
-        ackey = generate_random_ackey(8)
         acr = random.randint(1, 10)
         
         naver_url = (
