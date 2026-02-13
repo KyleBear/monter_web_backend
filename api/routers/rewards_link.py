@@ -302,7 +302,7 @@ def generate_random_ackey(length: int = 8) -> str:
 
 def get_random_ackey_from_table(db: Session) -> Optional[str]:
     """
-    random_ackey_acq 테이블에서 random_key_queue_id <= 255인 레코드 중 랜덤으로 ackey 가져오기
+    random_ackey_acq 테이블에서 전체 레코드 중 랜덤으로 ackey 가져오기
     
     Args:
         db: DB 세션
@@ -311,15 +311,14 @@ def get_random_ackey_from_table(db: Session) -> Optional[str]:
         str or None: ackey 값 (없으면 None)
     """
     try:
-        # random_key_queue_id <= 255인 레코드 중 랜덤으로 선택
+        # 전체 테이블에서 ackey가 있는 레코드 중 랜덤으로 선택
         records = db.query(RandomAckeyAcq).filter(
-            RandomAckeyAcq.random_key_queue_id <= 255,
             RandomAckeyAcq.ackey.isnot(None),
             RandomAckeyAcq.ackey != ''
         ).all()
         
         if not records:
-            logger.warning("random_ackey_acq 테이블에 random_key_queue_id <= 255인 레코드가 없습니다.")
+            logger.warning("random_ackey_acq 테이블에 ackey가 있는 레코드가 없습니다.")
             return None
         
         # 랜덤으로 하나 선택
