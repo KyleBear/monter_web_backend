@@ -25,7 +25,7 @@ import time
 
 # reward_keysearch 모듈 import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from reward_keysearch import create_missing_keywords_and_search_url
+from reward_keysearch import create_missing_keywords_and_search_url, create_search_url
 from sellution_rank3 import BrowserPool
 
 router = APIRouter()
@@ -91,6 +91,33 @@ def get_cached_keywords(short_code: str, db: Session) -> List[RewardLinkKeyword]
             _keywords_cache['last_update'][short_code] = current_time
     
     return _keywords_cache['data'].get(short_code, [])
+
+
+def update_keywords_cache(short_code: str, db: Session):
+    """
+    키워드 캐시 즉시 업데이트 (short_code별)
+    DELETE/UPDATE 작업 후 호출하여 캐시를 최신 상태로 갱신
+    """
+    with _keywords_cache['lock']:
+        try:
+            # DB에서 최신 데이터 조회
+            keywords = db.query(RewardLinkKeyword).filter(
+                RewardLinkKeyword.short_code == short_code,
+                RewardLinkKeyword.query_keyword.isnot(None),
+                RewardLinkKeyword.query_keyword != ''
+            ).order_by(RewardLinkKeyword.keyword_id).all()
+            
+            # 캐시에 저장
+            _keywords_cache['data'][short_code] = keywords
+            _keywords_cache['last_update'][short_code] = time.time()
+            
+            logger.debug(f"[키워드 캐시] 업데이트 완료: short_code={short_code}, 키워드 수={len(keywords)}")
+        
+        except Exception as e:
+            logger.error(f"[키워드 캐시] 업데이트 오류: {e}", exc_info=True)
+            # 오류 시 빈 리스트로 설정
+            _keywords_cache['data'][short_code] = []
+            _keywords_cache['last_update'][short_code] = time.time()
 
 
 def _get_cached_random_acq_data(db: Session) -> Tuple[list, list]:
@@ -481,16 +508,16 @@ async def redirect_to_naver(
         
         # 2. ACQ 생성 (기존대로 random_acq 테이블에서)
         acq = generate_acq_from_random_table(db)
-        t3 = time.time()
-        logger.info(f"[리다이렉트 성능] ACQ 생성: {(t3-t2)*1000:.2f}ms")
+        # t3 = time.time()
+        # logger.info(f"[리다이렉트 성능] ACQ 생성: {(t3-t2)*1000:.2f}ms")
         
         # 3. ACKEY 생성 (random_ackey_acq 테이블에서 가져오기)
-        ackey = get_random_ackey_from_table(db)
+        # ackey = get_random_ackey_from_table(db)
         
         # ackey가 없으면 랜덤 생성 (fallback)
-        if not ackey:
-            ackey = generate_random_ackey(8)
-            logger.warning("random_ackey_acq 테이블에서 ackey를 가져오지 못해 랜덤 생성")
+        # if not ackey:
+        ackey = generate_random_ackey(8)
+        logger.warning("random_ackey_acq 테이블에서 ackey를 가져오지 못해 랜덤 생성")
         
         acr = random.randint(1, 10)
         
@@ -794,48 +821,29 @@ async def create_links_batch(
                     })
                     continue
                 
-                # 각 상품마다 별도의 short_code 생성
-                max_attempts = 10
-                short_code = None
-                
-                for _ in range(max_attempts):
-                    candidate = generate_short_code(10)
-                    existing = db.query(RewardLink).filter(RewardLink.short_code == candidate).first()
-                    if not existing:
-                        short_code = candidate
-                        break
-                
-                if not short_code:
-                    logger.error(f"[배치 링크 생성] 상품[{product_idx}] short_code 생성 실패")
-                    all_failed_products.append({
-                        "product_index": product_idx,
-                        "product_name": product.product_name,
-                        "nvmid": product.nvmid,
-                        "error": "short_code 생성 실패"
-                    })
-                    continue
-                
-                logger.info(f"[배치 링크 생성] 상품[{product_idx}] 생성된 short_code: {short_code}")
-                
-                # RewardLink 생성 (product_name과 nvmid로)
-                new_link = RewardLink(
-                    short_code=short_code,
-                    product_name=product.product_name.strip(),
-                    nvmid=product.nvmid.strip(),
-                    reward_link=None  # reward_keysearch에서 생성
-                )
-                db.add(new_link)
-                db.flush()  # link_id를 얻기 위해 flush
-                db.commit()  # commit하여 link_id 확보
-                
-                logger.info(f"[배치 링크 생성] 상품[{product_idx}] RewardLink 생성 완료: link_id={new_link.link_id}, short_code={short_code}")
+                logger.info(f"[배치 링크 생성] 상품[{product_idx}] 처리 시작")
                 
                 # reward_keysearch의 create_missing_keywords_and_search_url 함수 호출
                 # 새로운 DB 세션 생성 (reward_keysearch에서 사용)
                 new_db = SessionLocal()
                 try:
+                    # 임시 RewardLink 생성 (키워드 생성용)
+                    temp_short_code = generate_short_code(10)
+                    temp_link = RewardLink(
+                        short_code=temp_short_code,
+                        product_name=product.product_name.strip(),
+                        nvmid=product.nvmid.strip(),
+                        reward_link=None
+                    )
+                    new_db.add(temp_link)
+                    new_db.flush()
+                    new_db.commit()
+                    
+                    logger.info(f"[배치 링크 생성] 상품[{product_idx}] 임시 RewardLink 생성 완료: link_id={temp_link.link_id}")
+                    
+                    # 키워드 생성 (임시 link_id 사용)
                     create_result = create_missing_keywords_and_search_url(
-                        link_id=new_link.link_id,
+                        link_id=temp_link.link_id,
                         db=new_db,
                         browser_pool=browser_pool
                     )
@@ -848,41 +856,95 @@ async def create_links_batch(
                             "nvmid": product.nvmid,
                             "error": create_result['message']
                         })
+                        # 임시 링크 삭제
+                        new_db.delete(temp_link)
+                        new_db.commit()
                         continue
                     
                     logger.info(f"[배치 링크 생성] 상품[{product_idx}] 키워드 생성 완료: {create_result['message']}")
                     
                     # 생성된 키워드 조회
                     keywords = new_db.query(RewardLinkKeyword).filter(
-                        RewardLinkKeyword.link_id == new_link.link_id
+                        RewardLinkKeyword.link_id == temp_link.link_id
                     ).order_by(RewardLinkKeyword.keyword_id).all()
                     
-                    # 업데이트된 reward_link 조회
-                    updated_link = new_db.query(RewardLink).filter(
-                        RewardLink.link_id == new_link.link_id
-                    ).first()
+                    if not keywords:
+                        logger.warning(f"[배치 링크 생성] 상품[{product_idx}] 생성된 키워드가 없습니다.")
+                        all_failed_products.append({
+                            "product_index": product_idx,
+                            "product_name": product.product_name,
+                            "nvmid": product.nvmid,
+                            "error": "생성된 키워드가 없습니다."
+                        })
+                        # 임시 링크 삭제
+                        new_db.delete(temp_link)
+                        new_db.commit()
+                        continue
                     
+                    # 각 키워드마다 별도의 RewardLink 생성 (1:1 관계)
                     created_links = []
                     for keyword in keywords:
+                        # 각 키워드마다 고유한 short_code 생성
+                        max_attempts = 10
+                        short_code = None
+                        
+                        for _ in range(max_attempts):
+                            candidate = generate_short_code(10)
+                            existing = db.query(RewardLink).filter(RewardLink.short_code == candidate).first()
+                            if not existing:
+                                short_code = candidate
+                                break
+                        
+                        if not short_code:
+                            logger.error(f"[배치 링크 생성] 상품[{product_idx}] 키워드[{keyword.keyword_id}] short_code 생성 실패")
+                            continue
+                        
+                        # search_url 생성 (query_keyword와 acq_keyword 사용)
+                        query_keyword = keyword.query_keyword.replace('+', ' ')  # DB에 저장된 +를 공백으로 변환
+                        search_url = create_search_url(
+                            query=query_keyword,
+                            acq=keyword.acq_keyword,
+                            ackey=None,
+                            acr=None
+                        )
+                        
+                        # 새로운 RewardLink 생성 (1:1 관계)
+                        new_link = RewardLink(
+                            short_code=short_code,
+                            product_name=product.product_name.strip(),
+                            nvmid=product.nvmid.strip(),
+                            reward_link=search_url
+                        )
+                        db.add(new_link)
+                        db.flush()  # link_id를 얻기 위해 flush
+                        db.commit()  # commit하여 link_id 확보
+                        
+                        # RewardLinkKeyword의 link_id를 새로운 link_id로 업데이트
+                        keyword.link_id = new_link.link_id
+                        keyword.short_code = short_code
+                        new_db.commit()
+                        
                         created_links.append({
                             "link_id": new_link.link_id,
                             "short_code": short_code,
-                            "reward_link": updated_link.reward_link if updated_link else None,
+                            "reward_link": search_url,
                             "keyword_id": keyword.keyword_id,
                             "query": keyword.query_keyword,
                             "acq": keyword.acq_keyword
                         })
+                    
+                    # 임시 링크 삭제
+                    new_db.delete(temp_link)
+                    new_db.commit()
                     
                     # 상품별 결과 저장
                     all_created_links.append({
                         "product_index": product_idx,
                         "product_name": product.product_name,
                         "nvmid": product.nvmid,
-                        "short_code": short_code,
-                        "link_id": new_link.link_id,
-                        "created_keywords": create_result['created_keywords'],
-                        "created_search_url": create_result['created_search_url'],
-                        "message": create_result['message'],
+                        "created_keywords": len(created_links),
+                        "created_search_url": True,
+                        "message": f"{len(created_links)}개 링크 생성 완료",
                         "links": created_links
                     })
                     
@@ -905,15 +967,15 @@ async def create_links_batch(
         except Exception as e:
             logger.warning(f"[배치 링크 생성] BrowserPool cleanup 중 오류: {e}")
         
-        # 전체 통계 계산
-        total_created_keywords = sum(item["created_keywords"] for item in all_created_links)
-        total_created_links_count = len(all_created_links)
+        # 전체 통계 계산 (1:1 관계이므로 링크 수 = 키워드 수)
+        total_created_links_count = sum(len(item["links"]) for item in all_created_links)
+        total_created_keywords = total_created_links_count  # 1:1 관계이므로 동일
         
-        logger.info(f"[배치 링크 생성] 총 {len(products)}개 상품, {total_created_links_count}개 링크 생성 완료, {total_created_keywords}개 키워드 생성")
+        logger.info(f"[배치 링크 생성] 총 {len(products)}개 상품, {total_created_links_count}개 링크 생성 완료 (1:1 관계)")
         
         return {
             "success": True,
-            "message": f"{len(products)}개 상품에 대해 {total_created_links_count}개 링크, {total_created_keywords}개 키워드가 생성되었습니다.",
+            "message": f"{len(products)}개 상품에 대해 {total_created_links_count}개 링크가 생성되었습니다. (1:1 관계)",
             "data": {
                 "total_products": len(products),
                 "total_created_links": total_created_links_count,
@@ -981,6 +1043,9 @@ async def update_keyword(
         # random_acq 테이블에서 acq 생성
         acq = generate_acq_from_random_table(db)
         
+        # short_code 저장 (수정 전)
+        short_code = link.short_code
+        
         # 키워드 수정
         keyword.query_keyword = query
         keyword.acq_keyword = acq
@@ -989,6 +1054,9 @@ async def update_keyword(
         
         db.commit()
         db.refresh(keyword)
+        
+        # 캐시 업데이트 (수정 후 최신 상태로 갱신)
+        update_keywords_cache(short_code, db)
         
         return {
             "success": True,
@@ -1033,6 +1101,9 @@ async def update_link(
                 detail=f"링크를 찾을 수 없습니다: {link_id}"
             )
         
+        # short_code 저장 (수정 전)
+        short_code = link.short_code
+        
         # 상품명 업데이트
         if link_data.product_name is not None:
             link.product_name = link_data.product_name
@@ -1065,6 +1136,9 @@ async def update_link(
         
         db.commit()
         db.refresh(link)
+        
+        # 캐시 업데이트 (수정 후 최신 상태로 갱신)
+        update_keywords_cache(short_code, db)
         
         # 업데이트된 키워드 조합 조회 (keyword_id 순서로 정렬)
         keywords = db.query(RewardLinkKeyword).filter(
@@ -1167,6 +1241,9 @@ async def add_keyword(
         db.refresh(keyword)
         db.refresh(new_link)
         
+        # 캐시 업데이트 (키워드 추가 후 최신 상태로 갱신)
+        update_keywords_cache(existing_link.short_code, db)
+        
         return {
             "success": True,
             "message": "키워드가 추가되었습니다.",
@@ -1220,6 +1297,9 @@ async def delete_keyword(
         # 해당 link_id의 reward_link 레코드 조회
         link = db.query(RewardLink).filter(RewardLink.link_id == link_id).first()
         
+        # short_code 저장 (삭제 전)
+        short_code = keyword.short_code if keyword else None
+        
         # 키워드 삭제
         db.delete(keyword)
         db.flush()  # 키워드 삭제를 즉시 반영
@@ -1234,6 +1314,10 @@ async def delete_keyword(
             logger.warning(f"link_id {link_id}에 해당하는 reward_link 레코드를 찾을 수 없습니다.")
         
         db.commit()  # 최종 커밋
+        
+        # 캐시 업데이트 (삭제 후 최신 상태로 갱신)
+        if short_code:
+            update_keywords_cache(short_code, db)
         
         return {
             "success": True,
@@ -1293,6 +1377,9 @@ async def delete_link(
         
         logger.info(f"[작업삭제] short_code '{short_code}': {deleted_link_count}개 링크, {deleted_keyword_count}개 키워드 삭제 완료")
         
+        # 캐시 업데이트 (삭제 후 최신 상태로 갱신)
+        update_keywords_cache(short_code, db)
+        
         return {
             "success": True,
             "message": f"short_code '{short_code}'에 해당하는 모든 항목이 삭제되었습니다.",
@@ -1334,6 +1421,7 @@ async def delete_keywords_batch(
         deleted_count = 0
         deleted_link_ids = set()
         failed_keyword_ids = []
+        affected_short_codes = set()  # 캐시 업데이트용
         
         for keyword_id in request.keyword_ids:
             try:
@@ -1350,6 +1438,8 @@ async def delete_keywords_batch(
                     continue
                 
                 link_id = keyword.link_id
+                short_code = keyword.short_code
+                affected_short_codes.add(short_code)  # 영향받은 short_code 추가
                 
                 # 키워드 삭제
                 db.delete(keyword)
@@ -1383,6 +1473,10 @@ async def delete_keywords_batch(
         db.commit()
         
         logger.info(f"[배치 삭제] 총 {len(request.keyword_ids)}개 중 {deleted_count}개 삭제 완료, {len(deleted_link_ids)}개 링크 삭제")
+        
+        # 캐시 업데이트 (영향받은 모든 short_code)
+        for short_code in affected_short_codes:
+            update_keywords_cache(short_code, db)
         
         return {
             "success": True,
@@ -1426,6 +1520,7 @@ async def update_keywords_batch(
         updated_count = 0
         failed_keywords = []
         results = []
+        affected_short_codes = set()  # 캐시 업데이트용
         
         for kw_item in request.keywords:
             try:
@@ -1443,6 +1538,11 @@ async def update_keywords_batch(
                 
                 # link_id로 링크 정보 조회 (short_code 업데이트용)
                 link = db.query(RewardLink).filter(RewardLink.link_id == keyword.link_id).first()
+                
+                # short_code 저장 (수정 전)
+                short_code = keyword.short_code if keyword.short_code else (link.short_code if link else None)
+                if short_code:
+                    affected_short_codes.add(short_code)
                 
                 # query_keyword가 제공되면 수정
                 if kw_item.query_keyword is not None:
@@ -1492,6 +1592,10 @@ async def update_keywords_batch(
         db.commit()
         
         logger.info(f"[배치 수정] 총 {len(request.keywords)}개 중 {updated_count}개 수정 완료, 실패: {len(failed_keywords)}개")
+        
+        # 캐시 업데이트 (영향받은 모든 short_code)
+        for short_code in affected_short_codes:
+            update_keywords_cache(short_code, db)
         
         return {
             "success": True,

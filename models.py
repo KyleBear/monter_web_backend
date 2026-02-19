@@ -232,7 +232,7 @@ class SettlementAdmin(Base):
     total_days = Column(Integer, comment='일수합계')
     created_at = Column(DateTime, default=func.now(), comment='생성일시')
     start_date = Column(Date, comment='시작일')
-    ad_product_nm = Column(String(255), comment='광고 상품명 (광고 삭제 시에도 유지)')
+    ad_product_nm = Column(Text, comment='정산 로그 (메인키워드, 상품명, URL 수정 시 변경 이력 저장)')
     # 광고 id로 광고 소유자의 user_id 확인후 광고주 id, 및 대행사 id 의 대행사 이름 가져오기.
 
 

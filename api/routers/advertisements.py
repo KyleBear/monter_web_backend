@@ -1518,15 +1518,27 @@ async def update_advertisement(
             detail="종료된 광고는 수정할 수 없습니다."
         )
     
-    # 메인 키워드 변경
-    if advertisement.main_keyword:
-        ad.main_keyword = advertisement.main_keyword
+    # 메인 키워드 변경 (로그 기록을 위해 변경 전 값 저장)
+    old_main_keyword = ad.main_keyword if ad.main_keyword else None
+    main_keyword_changed = False
     
-    # store_url 저장 및 product_mid 추출
+    if advertisement.main_keyword:
+        new_main_keyword = advertisement.main_keyword
+        if old_main_keyword != new_main_keyword:
+            main_keyword_changed = True
+            ad.main_keyword = new_main_keyword
+    
+    # store_url 저장 및 product_mid 추출 (로그 기록을 위해 변경 전 값 저장)
+    old_store_url = ad.store_url if ad.store_url else None
+    store_url_changed = False
+    
     if advertisement.store_url is not None:
         # 빈 문자열 처리
         if advertisement.store_url and advertisement.store_url.strip():
-            ad.store_url = advertisement.store_url.strip()
+            new_store_url = advertisement.store_url.strip()
+            if old_store_url != new_store_url:
+                store_url_changed = True
+            ad.store_url = new_store_url
             store_url_lower = advertisement.store_url.lower()
             
             # 오픈마켓 도메인 체크
@@ -1593,14 +1605,22 @@ async def update_advertisement(
                 logger.warning(f"store_url에서 product_mid를 추출할 수 없습니다: {advertisement.store_url}")
         else:
             # 빈 문자열이면 None으로 설정
+            if old_store_url is not None:
+                store_url_changed = True
             ad.store_url = None
             ad.product_mid = None
     
-    # shopping_url 저장 및 price_comparison_mid 추출
+    # shopping_url 저장 및 price_comparison_mid 추출 (로그 기록을 위해 변경 전 값 저장)
+    old_shopping_url = ad.shopping_url if ad.shopping_url else None
+    shopping_url_changed = False
+    
     if advertisement.shopping_url is not None:
         # 빈 문자열 처리
         if advertisement.shopping_url and advertisement.shopping_url.strip():
-            ad.shopping_url = advertisement.shopping_url.strip()
+            new_shopping_url = advertisement.shopping_url.strip()
+            if old_shopping_url != new_shopping_url:
+                shopping_url_changed = True
+            ad.shopping_url = new_shopping_url
             shopping_url_lower = advertisement.shopping_url.lower()
             
             # 네이버 쇼핑 URL 체크
@@ -1626,6 +1646,8 @@ async def update_advertisement(
                 logger.warning(f"shopping_url에서 nvmid를 추출할 수 없습니다: {advertisement.shopping_url}")
         else:
             # 빈 문자열이면 None으로 설정
+            if old_shopping_url is not None:
+                shopping_url_changed = True
             ad.shopping_url = None
             ad.price_comparison_mid = None
     
@@ -1637,9 +1659,15 @@ async def update_advertisement(
     if advertisement.slot is not None:
         ad.slot = advertisement.slot
     
-    # 상품명 변경
+    # 상품명 변경 (로그 기록을 위해 변경 전 값 저장)
+    old_product_name = ad.product_name if ad.product_name else None
+    product_name_changed = False
+    
     if advertisement.product_name is not None:
-        ad.product_name = advertisement.product_name
+        new_product_name = advertisement.product_name
+        if old_product_name != new_product_name:
+            product_name_changed = True
+            ad.product_name = new_product_name
     
     # 상품 MID 변경 (직접 지정된 경우)
     if advertisement.product_mid is not None:
@@ -1651,49 +1679,101 @@ async def update_advertisement(
     # 광고주 정보 조회 (대행사 ID 찾기 위해)
     user = db.query(UsersAdmin).filter(UsersAdmin.user_id == ad.user_id).first()
     
+    # 작업 수행자 ID (실제로 수정한 유저)
+    current_username = current_user.get("username")
+    performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+    performed_by_user_id = performed_by_user.user_id if performed_by_user else None
+    
+    # 대행사 ID 설정
+    agency_user_id = None
+    if user:
+        agency_user_id = user.parent_user_id if user.role == "advertiser" else None
+    
     try:
-        if user:
-            agency_user_id = user.parent_user_id if user.role == "advertiser" else None
-            
-            # 작업 수행자 ID (실제로 수정한 유저)
-            current_username = current_user.get("username")
-            performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
-            performed_by_user_id = performed_by_user.user_id if performed_by_user else None
-            
-            # 수정 로그 생성 (settlement_type='update')
-            new_settlement = SettlementAdmin(
-                settlement_type="update",
-                agency_user_id=agency_user_id,
-                advertiser_user_id=ad.user_id,
-                ad_id=ad.ad_id,
-                performed_by_user_id=performed_by_user_id,
-                quantity=None,
-                period_start=None,
-                period_end=None,
-                total_days=None,
-                start_date=None,
-                ad_product_nm=ad.product_name  # 일단 현재 값으로 설정
-            )
-            
-            db.add(new_settlement)
-            db.flush()  # ID를 얻기 위해 flush
+        # 변경 로그 메시지 생성
+        # 항상 세 가지 항목을 표시 (변경 없어도 로그 생성)
+        
+        # 1. 상품명 로그
+        old_product_val = old_product_name if old_product_name else "(없음)"
+        new_product_val = ad.product_name if ad.product_name else "(없음)"
+        if product_name_changed:
+            product_log = f"상품명: {old_product_val} -> {new_product_val}"
+        else:
+            product_log = f"상품명: 변경없음"
+        
+        # 2. 메인키워드 로그
+        old_keyword_val = old_main_keyword if old_main_keyword else "(없음)"
+        new_keyword_val = ad.main_keyword if ad.main_keyword else "(없음)"
+        if main_keyword_changed:
+            keyword_log = f"메인키워드: {old_keyword_val} -> {new_keyword_val}"
+        else:
+            keyword_log = f"메인키워드: 변경없음"
+        
+        # 3. URL 로그 (store_url 우선, 없으면 shopping_url)
+        url_changed = store_url_changed or shopping_url_changed
+        old_url_val = None
+        new_url_val = None
+        
+        # 기존 URL 값 (store_url 우선)
+        if old_store_url:
+            old_url_val = old_store_url
+        elif old_shopping_url:
+            old_url_val = old_shopping_url
+        else:
+            old_url_val = "(없음)"
+        
+        # 새 URL 값 (store_url 우선)
+        if ad.store_url:
+            new_url_val = ad.store_url
+        elif ad.shopping_url:
+            new_url_val = ad.shopping_url
+        else:
+            new_url_val = "(없음)"
+        
+        if url_changed:
+            url_log = f"URL: {old_url_val} -> {new_url_val}"
+        else:
+            url_log = f"URL: 변경없음"
+        
+        # 세 가지 로그를 항상 생성
+        change_logs = [product_log, keyword_log, url_log]
+        product_name_log = " | ".join(change_logs)  # 세 가지 항목을 |로 구분
+        
+        # 수정 로그 생성 (settlement_type='update')
+        # 변경사항이 없어도 로그 생성
+        new_settlement = SettlementAdmin(
+            settlement_type="update",
+            agency_user_id=agency_user_id,
+            advertiser_user_id=ad.user_id,
+            ad_id=ad.ad_id,
+            performed_by_user_id=performed_by_user_id,
+            quantity=None,
+            period_start=None,
+            period_end=None,
+            total_days=None,
+            start_date=None,
+            ad_product_nm=product_name_log  # 변경 로그 형식으로 저장
+        )
+        
+        db.add(new_settlement)
+        db.flush()  # ID를 얻기 위해 flush
 
-            # 순위 업데이트 (store_url, shopping_url이 있거나 main_keyword와 product_mid가 있는 경우)
-            # 실패 시 예외가 발생하여 except로 이동, rollback됨
-            store_url = advertisement.store_url
-            shopping_url = advertisement.shopping_url
-            
-            if store_url or shopping_url or (ad.main_keyword and ad.product_mid):
-                # 순환 import 방지를 위해 함수 내부에서 import
-                from api.routers.crol import update_single_advertisement_rank
-                update_single_advertisement_rank(
-                    ad_id=ad.ad_id, 
-                    db_session=db, 
-                    store_url=store_url,
-                    shopping_url=shopping_url
-                )
-                db.refresh(ad)  # prod_name
-                new_settlement.ad_product_nm = ad.product_name  # prod_name 수정 업데이트
+        # 순위 업데이트 (store_url, shopping_url이 있거나 main_keyword와 product_mid가 있는 경우)
+        # 실패 시 예외가 발생하여 except로 이동, rollback됨
+        store_url = advertisement.store_url
+        shopping_url = advertisement.shopping_url
+        
+        if store_url or shopping_url or (ad.main_keyword and ad.product_mid):
+            # 순환 import 방지를 위해 함수 내부에서 import
+            from api.routers.crol import update_single_advertisement_rank
+            update_single_advertisement_rank(
+                ad_id=ad.ad_id, 
+                db_session=db, 
+                store_url=store_url,
+                shopping_url=shopping_url
+            )
+            db.refresh(ad)  # prod_name
+            # ad_product_nm은 이미 정산 로그로 설정되었으므로 덮어쓰지 않음
         
         # commit도 try-except로 감싸기 (DB 오류 대비)
         try:
@@ -1963,10 +2043,10 @@ async def extend_advertisements(
                 continue
             
             # 새 광고 생성 (원본 광고 복사)
-            # start_date와 end_date는 원본 광고의 end_date부터 시작
-            new_start_date = ad.end_date
-            new_end_date = ad.end_date + timedelta(days=extend_request.extend_days)
-            
+            # start_date는 원본 광고의 end_date 다음날부터 시작 (내일)
+            new_start_date = ad.end_date + timedelta(days=1)
+            # end_date는 start_date에서 연장 일수 - 1일을 더함 (시작일 포함)
+            new_end_date = new_start_date + timedelta(days=extend_request.extend_days - 1)            
             # work_days 계산
             new_work_days = extend_request.extend_days
             
