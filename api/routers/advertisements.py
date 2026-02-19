@@ -782,10 +782,10 @@ async def create_advertisement(
     - 광고 등록과 동시에 정산 로그 생성 (order 타입)
     """
     # 오후 4시 이후 수정 차단 (슈퍼유저 제외)
-    # check_edit_time_allowed(
-    #     username=current_user.get("username"),
-    #     user_role=current_user.get("role")
-    # )
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     current_username = current_user.get("username")
     current_role = current_user.get("role")
@@ -1155,10 +1155,10 @@ async def upload_advertisements_csv(
     - end_date (필수): 종료일 (YYYY-MM-DD 형식)
     """
     # 오후 4시 이후 수정 차단 (슈퍼유저 제외)
-    # check_edit_time_allowed(
-    #     username=current_user.get("username"),
-    #     user_role=current_user.get("role")
-    # )
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     current_username = current_user.get("username")
     current_role = current_user.get("role")
@@ -1490,10 +1490,10 @@ async def update_advertisement(
     - store_url에서 마지막 숫자를 추출하여 product_mid로 저장
     """
     # 오후 4시 이후 수정 차단 (슈퍼유저 제외)
-    # check_edit_time_allowed(
-    #     username=current_user.get("username"),
-    #     user_role=current_user.get("role")
-    # )
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     # 광고 조회
     ad = db.query(AdvertisementsAdmin).filter(AdvertisementsAdmin.ad_id == ad_id).first()
@@ -1826,10 +1826,10 @@ async def delete_advertisements(
     - 하드 삭제 (실제 데이터베이스에서 삭제)
     """
     # 오후 4시 이후 수정 차단 (슈퍼유저 제외)
-    # check_edit_time_allowed(
-    #     username=current_user.get("username"),
-    #     user_role=current_user.get("role")
-    # )
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     # 광고주는 사용 불가
     current_role = current_user.get("role")
@@ -1885,17 +1885,33 @@ async def delete_advertisements(
                     advertiser_user_id = ad.user_id
                 
                 # 삭제 로그 생성 (settlement_type='refund')
+                # 남은 일수 계산 (오늘부터 종료일까지)
+                today = date.today()
+                remaining_days = 0
+                period_start = today
+                period_end = ad.end_date
+                
+                if ad.end_date and ad.start_date:
+                    # 오늘이 종료일 이전이면 남은 일수 계산
+                    if today <= ad.end_date:
+                        remaining_days = (ad.end_date - today).days + 1  # 종료일 포함
+                    # 이미 종료된 경우는 0일
+                    else:
+                        remaining_days = 0
+                        period_start = None  # 이미 종료된 경우 period_start는 None
+                        period_end = None
+                
                 new_settlement = SettlementAdmin(
                     settlement_type="refund",
                     agency_user_id=agency_user_id,
                     advertiser_user_id=advertiser_user_id,
                     ad_id=ad.ad_id,
                     performed_by_user_id=performed_by_user_id,
-                    quantity=None,
-                    period_start=None,
-                    period_end=None,
-                    total_days=None,
-                    start_date=None,
+                    quantity=ad.slot,  # 남은 슬롯 수량
+                    period_start=period_start,  # 현재 날짜 (환불일)
+                    period_end=period_end,  # 종료 날짜
+                    total_days=remaining_days if remaining_days > 0 else None,  # 남은 일수
+                    start_date=ad.start_date if ad.start_date else None,  # 원래 시작일
                     ad_product_nm=ad.product_name  # 일단 현재 값으로 설정
                 )
                 
@@ -1994,10 +2010,10 @@ async def extend_advertisements(
     - 광고 연장과 동시에 정산 로그 생성 (extend 타입)
     """
     # 오후 4시 이후 수정 차단 (슈퍼유저 제외)
-    # check_edit_time_allowed(
-    #     username=current_user.get("username"),
-    #     user_role=current_user.get("role")
-    # )
+    check_edit_time_allowed(
+        username=current_user.get("username"),
+        user_role=current_user.get("role")
+    )
     
     # 광고주는 사용 불가
     current_role = current_user.get("role")
