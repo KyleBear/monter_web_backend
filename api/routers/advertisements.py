@@ -719,11 +719,112 @@ async def get_advertisement_rank_history(
     today = date.today()
     seven_days_ago = today - timedelta(days=7)
     
-    rank_history = db.query(AdvertisementRankHistory).filter(
+    # 상품명이 변경된 시점 찾기 (SettlementAdmin에서 최신 update 로그 확인)
+    product_update_datetime = None
+    old_product_name = None
+    new_product_name = None
+    
+    latest_update_settlement = db.query(SettlementAdmin).filter(
+        SettlementAdmin.ad_id == ad_id,
+        SettlementAdmin.settlement_type == "update",
+        SettlementAdmin.ad_product_nm.isnot(None)
+    ).order_by(desc(SettlementAdmin.created_at)).first()
+    
+    if latest_update_settlement and latest_update_settlement.ad_product_nm:
+        # 로그 형식: "상품명: 기존값 -> 새값 | ..."
+        product_log = latest_update_settlement.ad_product_nm
+        if "상품명:" in product_log and "->" in product_log:
+            # 상품명이 변경된 경우
+            product_update_datetime = latest_update_settlement.created_at
+            # 로그에서 이전 상품명과 새 상품명 추출
+            import re
+            match = re.search(r'상품명:\s*([^|->]+)\s*->\s*([^|]+)', product_log)
+            if match:
+                old_product_name = match.group(1).strip()
+                new_product_name = match.group(2).strip()
+                # "(없음)" 제거
+                if old_product_name == "(없음)":
+                    old_product_name = None
+                if new_product_name == "(없음)":
+                    new_product_name = None
+    
+    # 순위 이력 조회
+    rank_history_query = db.query(AdvertisementRankHistory).filter(
         AdvertisementRankHistory.ad_id == ad_id,
         AdvertisementRankHistory.rank_date >= seven_days_ago,
         AdvertisementRankHistory.rank_date <= today
-    ).order_by(desc(AdvertisementRankHistory.rank_date), desc(AdvertisementRankHistory.created_at)).all()
+    )
+    
+    # 상품명이 변경된 경우: 변경 시점 기준으로 이전/이후 이력 분리
+    if product_update_datetime:
+        # 변경 전: 이전 상품명과 일치하는 이력 (created_at < 변경시점)
+        # 변경 후: 현재 상품명과 일치하는 이력 (created_at >= 변경시점)
+        from sqlalchemy import or_
+        
+        conditions = []
+        
+        # 변경 전 이력 (이전 상품명과 일치)
+        if old_product_name:
+            conditions.append(
+                and_(
+                    AdvertisementRankHistory.created_at < product_update_datetime,
+                    AdvertisementRankHistory.product_name == old_product_name
+                )
+            )
+        elif old_product_name is None:
+            # 이전 상품명이 없었던 경우 (None 또는 빈 문자열)
+            conditions.append(
+                and_(
+                    AdvertisementRankHistory.created_at < product_update_datetime,
+                    or_(
+                        AdvertisementRankHistory.product_name.is_(None),
+                        AdvertisementRankHistory.product_name == ""
+                    )
+                )
+            )
+        
+        # 변경 후 이력 (현재 상품명과 일치)
+        current_product_name = ad.product_name.strip() if ad.product_name and ad.product_name.strip() else None
+        if current_product_name:
+            conditions.append(
+                and_(
+                    AdvertisementRankHistory.created_at >= product_update_datetime,
+                    AdvertisementRankHistory.product_name == current_product_name
+                )
+            )
+        else:
+            # 현재 상품명이 없는 경우
+            conditions.append(
+                and_(
+                    AdvertisementRankHistory.created_at >= product_update_datetime,
+                    or_(
+                        AdvertisementRankHistory.product_name.is_(None),
+                        AdvertisementRankHistory.product_name == ""
+                    )
+                )
+            )
+        
+        if conditions:
+            rank_history_query = rank_history_query.filter(or_(*conditions))
+    else:
+        # 상품명이 변경되지 않은 경우: 현재 상품명과 일치하는 이력만 조회
+        if ad.product_name and ad.product_name.strip():
+            rank_history_query = rank_history_query.filter(
+                AdvertisementRankHistory.product_name == ad.product_name.strip()
+            )
+        else:
+            # 상품명이 없는 경우: product_name이 None이거나 빈 문자열인 이력만
+            rank_history_query = rank_history_query.filter(
+                or_(
+                    AdvertisementRankHistory.product_name.is_(None),
+                    AdvertisementRankHistory.product_name == ""
+                )
+            )
+    
+    rank_history = rank_history_query.order_by(
+        desc(AdvertisementRankHistory.rank_date), 
+        desc(AdvertisementRankHistory.created_at)
+    ).all()
     
     # 일자별로 그룹화 (같은 날짜에 여러 기록이 있을 수 있으므로 최신 것만)
     rank_by_date = {}
@@ -1910,7 +2011,7 @@ async def delete_advertisements(
                     quantity=ad.slot,  # 남은 슬롯 수량
                     period_start=period_start,  # 현재 날짜 (환불일)
                     period_end=period_end,  # 종료 날짜
-                    total_days=remaining_days if remaining_days > 0 else None,  # 남은 일수
+                    total_days=remaining_days,  # 남은 일수 (0일도 포함)
                     start_date=ad.start_date if ad.start_date else None,  # 원래 시작일
                     ad_product_nm=ad.product_name  # 일단 현재 값으로 설정
                 )
@@ -2097,11 +2198,29 @@ async def extend_advertisements(
                 work_days=new_work_days,
                 start_date=new_start_date,
                 end_date=new_end_date,
-                affiliation=ad.affiliation
+                affiliation=ad.affiliation,
+                slot=ad.slot,  # 슬롯 복사
+                store_url=ad.store_url,  # store_url 복사
+                shopping_url=ad.shopping_url,  # shopping_url 복사
+                rank=ad.rank  # 순위 복사
             )
             
             db.add(new_advertisement)
             db.flush()  # ad_id를 얻기 위해 flush
+            
+            # 순위 이력 복사 (기존 광고의 순위 이력을 새 광고로 복사)
+            existing_rank_history = db.query(AdvertisementRankHistory).filter(
+                AdvertisementRankHistory.ad_id == ad.ad_id
+            ).all()
+            
+            for rank_record in existing_rank_history:
+                new_rank_history = AdvertisementRankHistory(
+                    ad_id=new_advertisement.ad_id,  # 새 광고 ID
+                    rank_date=rank_record.rank_date,  # 기존 순위 날짜
+                    rank=rank_record.rank,  # 기존 순위
+                    product_name=rank_record.product_name  # 기존 상품명
+                )
+                db.add(new_rank_history)
                 
             # 정산 로그 생성 (extend 타입)
             agency_user_id = user.parent_user_id if user.role == "advertiser" else None

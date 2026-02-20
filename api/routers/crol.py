@@ -1045,7 +1045,7 @@ def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Opt
                 ad_id=ad_id,
                 rank_date=today,
                 rank=rank,
-                product_name=product_name
+                product_name=ad.product_name  # 업데이트된 ad.product_name 사용
             )
             db.add(rank_history)
             
@@ -1154,7 +1154,7 @@ def update_single_advertisement_rank(ad_id: int, db_session=None, store_url: Opt
             ad_id=ad_id,
             rank_date=today,
             rank=rank,
-            product_name=product_name.strip() if product_name else None
+            product_name=ad.product_name  # 업데이트된 ad.product_name 사용
         )
         db.add(rank_history)
         
