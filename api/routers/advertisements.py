@@ -1298,7 +1298,7 @@ async def create_advertisement(
             advertiser_user_id=target_user_id,
             ad_id=new_advertisement.ad_id,
             performed_by_user_id=performed_by_user_id,
-            quantity=1,
+            quantity=advertisement.slot if advertisement.slot else 0,  # slot 수량 사용
             period_start=advertisement.start_date,
             period_end=advertisement.end_date,
             total_days=work_days,
@@ -1614,7 +1614,7 @@ async def upload_advertisements_csv(
                     advertiser_user_id=row_user_id,
                     ad_id=new_advertisement.ad_id,
                     performed_by_user_id=performed_by_user_id,
-                    quantity=1,
+                    quantity=slot if slot else 0,  # slot 수량 사용
                     period_start=start_date,
                     period_end=end_date,
                     total_days=work_days,
@@ -2102,7 +2102,7 @@ async def delete_advertisements(
                     advertiser_user_id=advertiser_user_id,
                     ad_id=ad.ad_id,
                     performed_by_user_id=performed_by_user_id,
-                    quantity=ad.slot,  # 남은 슬롯 수량
+                    quantity=ad.slot if ad.slot else 0,  # 남은 슬롯 수량
                     period_start=period_start,  # 현재 날짜 (환불일)
                     period_end=period_end,  # 종료 날짜
                     total_days=-remaining_days if remaining_days > 0 else 0,  # 환불 일수 (음수로 표시)
@@ -2330,7 +2330,7 @@ async def extend_advertisements(
             advertiser_user_id=ad.user_id,
             ad_id=new_advertisement.ad_id,
             performed_by_user_id=performed_by_user_id,
-            quantity=1,
+            quantity=ad.slot if ad.slot else 0,  # slot 수량 사용
             period_start=new_start_date,
             period_end=new_end_date,
             total_days=new_work_days,
