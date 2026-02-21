@@ -22,6 +22,14 @@ import csv
 router = APIRouter()
 
 
+# HTML 태그 제거 함수 (유틸리티)
+def remove_html_tags(text):
+    """HTML 태그 제거"""
+    if not text:
+        return text
+    return re.sub(r'<[^>]+>', '', text).strip()
+
+
 # 요청/응답 모델
 class AdvertisementCreate(BaseModel):
     user_id: Optional[int] = None  # Optional로 변경 (없으면 현재 사용자 사용)
@@ -738,7 +746,7 @@ async def get_advertisement_rank_history(
             product_update_datetime = latest_update_settlement.created_at
             # 로그에서 이전 상품명과 새 상품명 추출
             import re
-            match = re.search(r'상품명:\s*([^|->]+)\s*->\s*([^|]+)', product_log)
+            match = re.search(r'상품명:\s*([^|>-]+)\s*->\s*([^|]+)', product_log)
             if match:
                 old_product_name = match.group(1).strip()
                 new_product_name = match.group(2).strip()
@@ -765,10 +773,23 @@ async def get_advertisement_rank_history(
         
         # 변경 전 이력 (이전 상품명과 일치)
         if old_product_name:
+            cleaned_old_product_name = remove_html_tags(old_product_name)
+            
+            # MySQL의 REGEXP_REPLACE를 사용하여 HTML 태그 제거 후 비교
             conditions.append(
                 and_(
                     AdvertisementRankHistory.created_at < product_update_datetime,
-                    AdvertisementRankHistory.product_name == old_product_name
+                    func.TRIM(
+                        func.REGEXP_REPLACE(
+                            func.REGEXP_REPLACE(
+                                AdvertisementRankHistory.product_name,
+                                r'<[^>]+>',
+                                ''
+                            ),
+                            r'\\s+',
+                            ' '
+                        )
+                    ) == cleaned_old_product_name
                 )
             )
         elif old_product_name is None:
@@ -786,10 +807,23 @@ async def get_advertisement_rank_history(
         # 변경 후 이력 (현재 상품명과 일치)
         current_product_name = ad.product_name.strip() if ad.product_name and ad.product_name.strip() else None
         if current_product_name:
+            cleaned_current_product_name = remove_html_tags(current_product_name)
+            
+            # MySQL의 REGEXP_REPLACE를 사용하여 HTML 태그 제거 후 비교
             conditions.append(
                 and_(
                     AdvertisementRankHistory.created_at >= product_update_datetime,
-                    AdvertisementRankHistory.product_name == current_product_name
+                    func.TRIM(
+                        func.REGEXP_REPLACE(
+                            func.REGEXP_REPLACE(
+                                AdvertisementRankHistory.product_name,
+                                r'<[^>]+>',
+                                ''
+                            ),
+                            r'\\s+',
+                            ' '
+                        )
+                    ) == cleaned_current_product_name
                 )
             )
         else:
@@ -808,10 +842,41 @@ async def get_advertisement_rank_history(
             rank_history_query = rank_history_query.filter(or_(*conditions))
     else:
         # 상품명이 변경되지 않은 경우: 현재 상품명과 일치하는 이력만 조회
+        rank_history = None  # 초기화
         if ad.product_name and ad.product_name.strip():
-            rank_history_query = rank_history_query.filter(
-                AdvertisementRankHistory.product_name == ad.product_name.strip()
-            )
+            # 현재 광고의 상품명에서 HTML 태그 제거
+            cleaned_product_name = remove_html_tags(ad.product_name.strip())
+            
+            # MySQL의 REGEXP_REPLACE를 사용하여 HTML 태그 제거 후 비교
+            # MySQL 8.0+ 또는 MariaDB 10.0.5+에서 지원
+            try:
+                # REGEXP_REPLACE로 HTML 태그 제거 후 비교
+                rank_history_query = rank_history_query.filter(
+                    func.TRIM(
+                        func.REGEXP_REPLACE(
+                            func.REGEXP_REPLACE(
+                                AdvertisementRankHistory.product_name,
+                                r'<[^>]+>',
+                                ''
+                            ),
+                            r'\\s+',
+                            ' '
+                        )
+                    ) == cleaned_product_name
+                )
+            except Exception as e:
+                # REGEXP_REPLACE가 지원되지 않는 경우: Python에서 필터링
+                # 모든 결과를 가져온 후 Python에서 필터링
+                all_rank_history = rank_history_query.all()
+                rank_history = []
+                for rank_record in all_rank_history:
+                    cleaned_history_name = remove_html_tags(rank_record.product_name or "")
+                    if cleaned_history_name == cleaned_product_name:
+                        rank_history.append(rank_record)
+                # rank_history는 이미 필터링된 리스트이므로 정렬 후 반환
+                rank_history = sorted(rank_history, key=lambda x: (x.rank_date, x.created_at or datetime(1900, 1, 1)), reverse=True)
+                # rank_history_query를 None으로 설정하여 아래 쿼리 실행 방지
+                rank_history_query = None
         else:
             # 상품명이 없는 경우: product_name이 None이거나 빈 문자열인 이력만
             rank_history_query = rank_history_query.filter(
@@ -821,10 +886,17 @@ async def get_advertisement_rank_history(
                 )
             )
     
-    rank_history = rank_history_query.order_by(
-        desc(AdvertisementRankHistory.rank_date), 
-        desc(AdvertisementRankHistory.created_at)
-    ).all()
+    # rank_history_query가 None이 아닌 경우에만 쿼리 실행
+    if rank_history_query is not None:
+        rank_history = rank_history_query.order_by(
+            desc(AdvertisementRankHistory.rank_date), 
+            desc(AdvertisementRankHistory.created_at)
+        ).all()
+    # rank_history_query가 None인 경우 이미 필터링된 rank_history 사용 (예외 처리 블록에서 정의됨)
+    
+    # rank_history가 None이면 빈 리스트로 초기화
+    if rank_history is None:
+        rank_history = []
     
     # 일자별로 그룹화 (같은 날짜에 여러 기록이 있을 수 있으므로 최신 것만)
     rank_by_date = {}
@@ -995,21 +1067,30 @@ async def create_advertisement(
                 match = re.search(r'catalog/(\d+)', advertisement.shopping_url)
                 if match:
                     # URL 파싱 성공 시 바로 nvmid로 사용 (smartstore와 다르게)
-                    extracted_price_comparison_mid = match.group(1)                
-                result = get_rank_by_keyword_and_url(advertisement.main_keyword, advertisement.shopping_url)
-                
-                if result.get("success"):
-                    shopping_rank = result.get("rank")
-                    shopping_product_name = result.get("product_name")
-                    shopping_nvmid = result.get("nvmid")
+                    extracted_price_comparison_mid = match.group(1)
+                try:
+                    result = get_rank_by_keyword_and_url(advertisement.main_keyword, advertisement.shopping_url)
                     
-                    # nvmid가 있으면 price_comparison_mid에 저장, 없으면 NULL로 설정
-                    if shopping_nvmid:
-                        extracted_price_comparison_mid = shopping_nvmid
+                    if result.get("success"):
+                        shopping_rank = result.get("rank")
+                        shopping_product_name = result.get("product_name")
+                        shopping_nvmid = result.get("nvmid")
+                        
+                        # nvmid가 있으면 price_comparison_mid에 저장, 없으면 NULL로 설정
+                        if shopping_nvmid:
+                            extracted_price_comparison_mid = shopping_nvmid
+                        else:
+                            extracted_price_comparison_mid = None
                     else:
+                        # 매칭 실패 시 price_comparison_mid를 NULL로 설정
                         extracted_price_comparison_mid = None
-                else:
-                    # 매칭 실패 시 price_comparison_mid를 NULL로 설정
+                except Exception as e:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error(f"shopping_url 순위 조회 실패: {e}", exc_info=True)
+                    shopping_rank = None
+                    shopping_product_name = None
+                    shopping_nvmid = None
                     extracted_price_comparison_mid = None
             
             ### 오픈몰 및 basemall 선처리 로직 ###
@@ -1087,21 +1168,30 @@ async def create_advertisement(
             # store_url 처리 (shopping_url 매칭 여부와 관계없이)
             # 오픈마켓/기본몰이 아닌 경우에만 실행
             if advertisement.store_url and not is_openmall and not is_basemall:
-                result = get_rank_by_keyword_and_url(advertisement.main_keyword, advertisement.store_url)
-                
-                if result.get("success"):
-                    store_rank = result.get("rank")
-                    store_product_name = result.get("product_name")
-                    store_nvmid = result.get("nvmid")
+                try:
+                    result = get_rank_by_keyword_and_url(advertisement.main_keyword, advertisement.store_url)
                     
-                    # nvmid가 있으면 product_mid에 저장, 없으면 NULL로 설정
-                    if store_nvmid:
-                        extracted_product_mid = store_nvmid
+                    if result.get("success"):
+                        store_rank = result.get("rank")
+                        store_product_name = result.get("product_name")
+                        store_nvmid = result.get("nvmid")
+                        
+                        # nvmid가 있으면 product_mid에 저장, 없으면 NULL로 설정
+                        if store_nvmid:
+                            extracted_product_mid = store_nvmid
+                        else:
+                            # 매칭 성공했지만 nvmid가 없으면 NULL로 설정
+                            extracted_product_mid = None
                     else:
-                        # 매칭 성공했지만 nvmid가 없으면 NULL로 설정
+                        # 매칭 실패 시 product_mid를 NULL로 설정
                         extracted_product_mid = None
-                else:
-                    # 매칭 실패 시 product_mid를 NULL로 설정
+                except Exception as e:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error(f"store_url 순위 조회 실패: {e}", exc_info=True)
+                    store_rank = None
+                    store_product_name = None
+                    store_nvmid = None
                     extracted_product_mid = None
             
             # 순위 및 상품명 결정 (shopping_url 우선, 둘 다 매칭되면 shopping_url의 순위 사용)
@@ -1986,21 +2076,25 @@ async def delete_advertisements(
                     advertiser_user_id = ad.user_id
                 
                 # 삭제 로그 생성 (settlement_type='refund')
-                # 남은 일수 계산 (오늘부터 종료일까지)
+                # 이미 종료된 경우 환불 불가
                 today = date.today()
+                if ad.end_date and today > ad.end_date:
+                    failed_ads.append({"ad_id": ad_id, "reason": "이미 종료된 광고는 환불할 수 없습니다."})
+                    continue
+                
+                # 남은 일수 계산 (광고 시작일부터 종료일까지)
                 remaining_days = 0
-                period_start = today
-                period_end = ad.end_date
                 
                 if ad.end_date and ad.start_date:
-                    # 오늘이 종료일 이전이면 남은 일수 계산
-                    if today <= ad.end_date:
-                        remaining_days = (ad.end_date - today).days + 1  # 종료일 포함
-                    # 이미 종료된 경우는 0일
-                    else:
-                        remaining_days = 0
-                        period_start = None  # 이미 종료된 경우 period_start는 None
-                        period_end = None
+                    # period_start는 오늘과 광고 시작일 중 늦은 것 (실제 환불 기간 시작일)
+                    period_start = max(today, ad.start_date)
+                    period_end = ad.end_date
+                    
+                    # 실제 광고 진행 기간 계산 (시작일부터 종료일까지)
+                    remaining_days = (period_end - period_start).days + 1  # 종료일 포함
+                else:
+                    period_start = None
+                    period_end = None
                 
                 new_settlement = SettlementAdmin(
                     settlement_type="refund",
@@ -2011,7 +2105,7 @@ async def delete_advertisements(
                     quantity=ad.slot,  # 남은 슬롯 수량
                     period_start=period_start,  # 현재 날짜 (환불일)
                     period_end=period_end,  # 종료 날짜
-                    total_days=remaining_days,  # 남은 일수 (0일도 포함)
+                    total_days=-remaining_days if remaining_days > 0 else 0,  # 환불 일수 (음수로 표시)
                     start_date=ad.start_date if ad.start_date else None,  # 원래 시작일
                     ad_product_nm=ad.product_name  # 일단 현재 값으로 설정
                 )
