@@ -119,10 +119,35 @@ async def get_accounts(
     
     account_list = []
     for account in accounts:
+        # 상위 계정 정보 조회
+        parent_username = None
+        if account.parent_user_id:
+            parent = db.query(UsersAdmin).filter(
+                UsersAdmin.user_id == account.parent_user_id
+            ).first()
+            if parent:
+                parent_username = parent.username
+        
+        # 생성자 정보 조회 (parent_user_id를 기반으로 추론)
+        # 주의: 실제 생성자와 parent_user_id가 다를 수 있지만, 
+        # 현재 데이터베이스에 created_by_user_id 컬럼이 없으므로 parent_user_id를 사용
+        created_by_username = None
+        created_by_user_id = None
+        
+        # parent_user_id가 있으면 상위 계정을 생성자로 간주 (임시 처리)
+        # 실제로는 created_by_user_id 컬럼이 필요하지만, 현재는 없으므로 parent_user_id 사용
+        if account.parent_user_id:
+            created_by_user_id = account.parent_user_id
+            created_by_username = parent_username  # 상위 계정 이름을 생성자로 표시
+        
         account_data = {
             "user_id": account.user_id,
             "username": account.username,
             "role": account.role,
+            "parent_user_id": account.parent_user_id,
+            "parent_username": parent_username,
+            "created_by_user_id": created_by_user_id,
+            "created_by_username": created_by_username,
             "affiliation": account.affiliation or "",
             "memo": account.memo or "",
             "is_active": account.is_active,
@@ -458,25 +483,43 @@ async def create_account(
     # parent_user_id 자동 설정 (총판사는 parent_user_id가 None이어야 함)
     final_parent_user_id = account.parent_user_id
     
-    # 슈퍼유저가 아닌 경우, parent_user_id 자동 설정
-    if current_username not in ["admin", "monteur"]:
+    # 관리자가 계정을 생성할 때는 항상 관리자의 user_id를 parent_user_id로 설정
+    if current_username in ["admin", "monteur"]:
+        # 관리자가 계정을 생성할 때
+        if account.role == "total":
+            # 총판사는 parent_user_id가 None이어야 함
+            final_parent_user_id = None
+        else:
+            # 대행사나 광고주는 관리자의 user_id를 parent_user_id로 설정
+            if actual_user:
+                final_parent_user_id = actual_user_id
+            else:
+                # 관리자 계정이 users_admin에 없으면 요청에서 온 값 사용 (없으면 None)
+                if not final_parent_user_id:
+                    final_parent_user_id = None
+    else:
+        # 일반 사용자가 계정을 생성할 때
         if account.role == "total":
             # 총판사는 parent_user_id가 None이어야 함
             final_parent_user_id = None
         elif account.role == "agency":
             # 대행사는 총판사의 하위여야 함
-            if actual_role == "total":
-                final_parent_user_id = actual_user_id
-            elif not final_parent_user_id:
-                # parent_user_id가 명시되지 않았으면 현재 사용자를 parent로 설정
-                final_parent_user_id = actual_user_id
+            if not final_parent_user_id:
+                if actual_role == "total":
+                    # 현재 사용자가 총판사면 자신을 parent로 설정
+                    final_parent_user_id = actual_user_id
+                else:
+                    # 기타 경우 현재 사용자를 parent로 설정
+                    final_parent_user_id = actual_user_id
         elif account.role == "advertiser":
             # 광고주는 대행사의 하위여야 함
-            if actual_role == "agency":
-                final_parent_user_id = actual_user_id
-            elif not final_parent_user_id:
-                # parent_user_id가 명시되지 않았으면 현재 사용자를 parent로 설정
-                final_parent_user_id = actual_user_id
+            if not final_parent_user_id:
+                if actual_role == "agency":
+                    # 현재 사용자가 대행사면 자신을 parent로 설정
+                    final_parent_user_id = actual_user_id
+                else:
+                    # 기타 경우 현재 사용자를 parent로 설정
+                    final_parent_user_id = actual_user_id
     
     # parent_user_id 검증
     if account.role == "agency" and final_parent_user_id:
@@ -513,6 +556,7 @@ async def create_account(
     password_hash = hash_password(account.password)
     
     # 계정 생성
+    # 주의: created_by_user_id 컬럼이 데이터베이스에 없으므로 사용하지 않음
     new_account = UsersAdmin(
         username=account.username,
         password_hash=password_hash,
