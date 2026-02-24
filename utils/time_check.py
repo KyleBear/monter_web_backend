@@ -1,6 +1,6 @@
 """
 시간 체크 유틸리티
-평일: 오후 4시 30분 이후 수정 작업 차단
+평일: 오후 4시 이후 수정 작업 차단
 주말: 오전 11시 이후 수정 작업 차단 (슈퍼유저 제외)
 """
 from datetime import datetime, time
@@ -12,7 +12,7 @@ SUPERUSER_USERNAMES = {"admin", "monteur"}
 
 def check_edit_time_allowed(username: str = None, user_role: str = None):
     """
-    평일: 오후 4시 30분 이후 수정 작업을 차단하는 함수
+    평일: 오후 4시 이후 수정 작업을 차단하는 함수
     주말: 오전 11시 이후 수정 작업을 차단하는 함수
     슈퍼유저(admin, monter)는 시간 제한 없이 사용 가능
     
@@ -47,11 +47,11 @@ def check_edit_time_allowed(username: str = None, user_role: str = None):
                 detail="주말 오전 11시 이후에는 수정 작업을 할 수 없습니다."
             )
     else:
-        # 평일: 오후 4시 30분 이후 차단
-        cutoff_time = time(16, 30)  # 오후 4시 30분
+        # 평일: 오후 4시 이후 차단
+        cutoff_time = time(16, 0)  # 오후 4시
         if current_time >= cutoff_time:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="평일 오후 4시 30분 이후에는 수정 작업을 할 수 없습니다."
+                detail="평일 오후 4시 이후에는 수정 작업을 할 수 없습니다."
             )
 
