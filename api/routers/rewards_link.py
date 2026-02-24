@@ -40,6 +40,14 @@ _random_acq_cache = {
     'lock': threading.Lock()
 }
 
+# ✅ ackey 조회 캐시 (5분 TTL)
+_ackey_cache = {
+    'ackey_list': [],
+    'last_update': 0,
+    'cache_ttl': 300,  # 5분
+    'lock': threading.Lock()
+}
+
 # ✅ 키워드 조회 캐시 (short_code별, 5분 TTL)
 _keywords_cache = {
     'data': {},  # {short_code: [keywords_list]}
@@ -327,9 +335,53 @@ def generate_random_ackey(length: int = 8) -> str:
     return ''.join(random.choice(chars) for _ in range(length))
 
 
+def _get_cached_ackey_list(db: Session) -> List[str]:
+    """
+    캐시된 ackey 리스트 반환 (5분 TTL) - 락 최적화
+    Double-checked locking 패턴으로 락 경합 최소화
+    """
+    current_time = time.time()
+    
+    # ✅ 1단계: 락 없이 캐시 유효성 확인 (대부분의 경우 여기서 반환)
+    if (_ackey_cache['last_update'] > 0 and 
+        current_time - _ackey_cache['last_update'] <= _ackey_cache['cache_ttl'] and
+        _ackey_cache['ackey_list']):
+        # 캐시가 유효하면 바로 반환 (락 없이!)
+        return _ackey_cache['ackey_list']
+    
+    # ✅ 2단계: 캐시 만료 시에만 락 잡고 갱신
+    with _ackey_cache['lock']:
+        # Double-check: 다른 스레드가 이미 갱신했을 수 있음
+        if (current_time - _ackey_cache['last_update'] <= _ackey_cache['cache_ttl'] and
+            _ackey_cache['ackey_list']):
+            return _ackey_cache['ackey_list']
+        
+        # 캐시 갱신 필요
+        try:
+            # ✅ DISTINCT로 중복 제거하여 조회 (한 번만)
+            ackey_records = db.query(RandomAckeyAcq.ackey).filter(
+                RandomAckeyAcq.ackey.isnot(None),
+                RandomAckeyAcq.ackey != ''
+            ).distinct().all()
+            
+            _ackey_cache['ackey_list'] = [a[0] for a in ackey_records if a[0]]
+            _ackey_cache['last_update'] = current_time
+            
+            logger.debug(f"[ackey 캐시] 갱신 완료: ackey 수={len(_ackey_cache['ackey_list'])}")
+        
+        except Exception as e:
+            logger.error(f"[ackey 캐시] 갱신 오류: {e}", exc_info=True)
+            # 기본값 설정
+            if not _ackey_cache['ackey_list']:
+                _ackey_cache['ackey_list'] = []
+    
+    return _ackey_cache['ackey_list']
+
+
 def get_random_ackey_from_table(db: Session) -> Optional[str]:
     """
     random_ackey_acq 테이블에서 전체 레코드 중 랜덤으로 ackey 가져오기
+    성능 최적화: 캐싱 사용 (5분 TTL)
     
     Args:
         db: DB 세션
@@ -338,21 +390,17 @@ def get_random_ackey_from_table(db: Session) -> Optional[str]:
         str or None: ackey 값 (없으면 None)
     """
     try:
-        # 전체 테이블에서 ackey가 있는 레코드 중 랜덤으로 선택
-        records = db.query(RandomAckeyAcq).filter(
-            RandomAckeyAcq.ackey.isnot(None),
-            RandomAckeyAcq.ackey != ''
-        ).all()
+        # ✅ 캐시에서 ackey 리스트 가져오기
+        ackey_list = _get_cached_ackey_list(db)
         
-        if not records:
+        if not ackey_list:
             logger.warning("random_ackey_acq 테이블에 ackey가 있는 레코드가 없습니다.")
             return None
         
-        # 랜덤으로 하나 선택
-        selected = random.choice(records)
-        ackey = selected.ackey
+        # ✅ 메모리에서 랜덤 선택 (매우 빠름)
+        ackey = random.choice(ackey_list)
         
-        logger.debug(f"[ackey 조회] random_key_queue_id={selected.random_key_queue_id}, ackey={ackey}")
+        logger.debug(f"[ackey 조회] 캐시에서 랜덤 선택: ackey={ackey}")
         
         return ackey
         
@@ -494,7 +542,6 @@ async def redirect_to_naver(
         keywords = get_cached_keywords(short_code, db)
         
         t2 = time.time()
-        logger.info(f"[리다이렉트 성능] 키워드 조회: {(t2-t1)*1000:.2f}ms")
         
         if not keywords:
             raise HTTPException(
@@ -506,18 +553,17 @@ async def redirect_to_naver(
         random_keyword = random.choice(keywords)
         query_keyword = random_keyword.query_keyword
         
-        # 2. ACQ 생성 (기존대로 random_acq 테이블에서)
+        # 2. ACQ 생성 (캐시 사용)
         acq = generate_acq_from_random_table(db)
-        # t3 = time.time()
-        # logger.info(f"[리다이렉트 성능] ACQ 생성: {(t3-t2)*1000:.2f}ms")
+        t3 = time.time()
         
-        # 3. ACKEY 생성 (random_ackey_acq 테이블에서 가져오기)
-        # ackey = get_random_ackey_from_table(db)
+        # 3. ACKEY 생성 (캐시 사용)
+        ackey = get_random_ackey_from_table(db)
         
         # ackey가 없으면 랜덤 생성 (fallback)
-        # if not ackey:
-        ackey = generate_random_ackey(8)
-        logger.warning("random_ackey_acq 테이블에서 ackey를 가져오지 못해 랜덤 생성")
+        if not ackey:
+            ackey = generate_random_ackey(8)
+            logger.debug("random_ackey_acq 테이블에서 ackey를 가져오지 못해 랜덤 생성")
         
         acr = random.randint(1, 10)
         
@@ -533,9 +579,10 @@ async def redirect_to_naver(
         )
         
         t4 = time.time()
-        logger.info(f"[리다이렉트 성능] URL 생성: {(t4-t3)*1000:.2f}ms")
-        logger.info(f"[리다이렉트 성능] 전체: {(t4-t1)*1000:.2f}ms")
-        logger.info(f"[리다이렉트] short_code={short_code}, 선택된 keyword_id={random_keyword.keyword_id}, query='{query_keyword}', 생성된 URL: {naver_url[:100]}...")
+        # 성능 로그는 DEBUG 레벨로 변경 (샘플링: 1%만 로깅)
+        if random.random() < 0.01:  # 1% 샘플링
+            logger.debug(f"[리다이렉트 성능] 키워드 조회: {(t2-t1)*1000:.2f}ms, ACQ 생성: {(t3-t2)*1000:.2f}ms, URL 생성: {(t4-t3)*1000:.2f}ms, 전체: {(t4-t1)*1000:.2f}ms")
+            logger.debug(f"[리다이렉트] short_code={short_code}, keyword_id={random_keyword.keyword_id}, query='{query_keyword}', URL: {naver_url[:100]}...")
         
         # 리다이렉트
         return RedirectResponse(url=naver_url, status_code=302)

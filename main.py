@@ -110,7 +110,6 @@ async def public_redirect(
         # 1. 키워드 조회 (캐시 사용)
         keywords = get_cached_keywords(short_code, db)
         t2 = time.time()
-        logger.info(f"[공개 리다이렉트 성능] 키워드 조회: {(t2-t1)*1000:.2f}ms")
         
         if not keywords:
             raise HTTPException(
@@ -122,19 +121,18 @@ async def public_redirect(
         random_keyword = random.choice(keywords)
         query_keyword = random_keyword.query_keyword
         
-        # random_acq 테이블에서 acq 생성 (기존대로)
+        # random_acq 테이블에서 acq 생성 (캐시 사용)
         acq = generate_acq_from_random_table(db)
         t3 = time.time()
-        logger.info(f"[공개 리다이렉트 성능] ACQ 생성: {(t3-t2)*1000:.2f}ms")
         
-        # random_ackey_acq 테이블에서 ackey 가져오기
+        # random_ackey_acq 테이블에서 ackey 가져오기 (캐시 사용)
         from api.routers.rewards_link import get_random_ackey_from_table
         ackey = get_random_ackey_from_table(db)
         
         # ackey가 없으면 랜덤 생성 (fallback)
         if not ackey:
             ackey = generate_random_ackey(8)
-            logger.warning("random_ackey_acq 테이블에서 ackey를 가져오지 못해 랜덤 생성")
+            logger.debug("random_ackey_acq 테이블에서 ackey를 가져오지 못해 랜덤 생성")
         
         # 새로운 search_url 생성
         acr = random.randint(1, 10)
@@ -151,9 +149,10 @@ async def public_redirect(
         )
         
         t4 = time.time()
-        logger.info(f"[공개 리다이렉트 성능] URL 생성: {(t4-t3)*1000:.2f}ms")
-        logger.info(f"[공개 리다이렉트 성능] 전체: {(t4-t1)*1000:.2f}ms")
-        logger.info(f"[공개 리다이렉트] short_code={short_code}, 선택된 keyword_id={random_keyword.keyword_id}, query='{query_keyword}', acq='{acq}', 생성된 URL: {naver_url[:150]}...")
+        # 성능 로그는 DEBUG 레벨로 변경 (샘플링: 1%만 로깅)
+        if random.random() < 0.01:  # 1% 샘플링
+            logger.debug(f"[공개 리다이렉트 성능] 키워드 조회: {(t2-t1)*1000:.2f}ms, ACQ 생성: {(t3-t2)*1000:.2f}ms, URL 생성: {(t4-t3)*1000:.2f}ms, 전체: {(t4-t1)*1000:.2f}ms")
+            logger.debug(f"[공개 리다이렉트] short_code={short_code}, keyword_id={random_keyword.keyword_id}, query='{query_keyword}', acq='{acq}', URL: {naver_url[:150]}...")
         
         # 리다이렉트
         return RedirectResponse(url=naver_url, status_code=302)

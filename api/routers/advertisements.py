@@ -395,39 +395,58 @@ async def get_advertisements(
     # 페이지네이션 적용
     results = query.offset(offset).limit(limit).all()
     
+    # 광고 ID 목록 추출 (순위 이력 일괄 조회용)
+    ad_ids = [ad.ad_id for ad, user in results]
+    
+    # 순위 이력을 한 번에 조회 (N+1 문제 해결)
+    today = date.today()
+    rank_dates = [
+        today - timedelta(days=1),  # 1일전
+        today - timedelta(days=2),   # 2일전
+        today - timedelta(days=7)    # 7일전
+    ]
+    
+    # 모든 순위 이력을 한 번에 조회
+    rank_history_all = []
+    if ad_ids:
+        rank_history_all = db.query(AdvertisementRankHistory).filter(
+            AdvertisementRankHistory.ad_id.in_(ad_ids),
+            AdvertisementRankHistory.rank_date.in_(rank_dates)
+        ).all()
+    
+    # ad_id와 rank_date별로 그룹화 (created_at 최신순으로 첫 번째만 사용)
+    rank_history_map = {}
+    for rank_record in rank_history_all:
+        key = (rank_record.ad_id, rank_record.rank_date)
+        if key not in rank_history_map:
+            rank_history_map[key] = rank_record
+        else:
+            # 더 최신 기록이면 업데이트
+            if rank_record.created_at and rank_history_map[key].created_at:
+                if rank_record.created_at > rank_history_map[key].created_at:
+                    rank_history_map[key] = rank_record
+            elif rank_record.created_at:
+                # 기존 기록에 created_at이 없으면 새 기록으로 업데이트
+                rank_history_map[key] = rank_record
+    
     # 광고 목록 구성
     advertisement_list = []
-    today = date.today()
-    
     for ad, user in results:
-        # 1일전, 2일전, 7일전 순위 조회
+        # 순위 이력에서 조회 (메모리에서)
         rank_1day_ago = None
         rank_2days_ago = None
         rank_7days_ago = None
         
-        # 1일전 순위
-        rank_1 = db.query(AdvertisementRankHistory).filter(
-            AdvertisementRankHistory.ad_id == ad.ad_id,
-            AdvertisementRankHistory.rank_date == today - timedelta(days=1)
-        ).order_by(desc(AdvertisementRankHistory.created_at)).first()
-        if rank_1:
-            rank_1day_ago = rank_1.rank
+        key_1day = (ad.ad_id, today - timedelta(days=1))
+        key_2days = (ad.ad_id, today - timedelta(days=2))
+        key_7days = (ad.ad_id, today - timedelta(days=7))
         
-        # 2일전 순위
-        rank_2 = db.query(AdvertisementRankHistory).filter(
-            AdvertisementRankHistory.ad_id == ad.ad_id,
-            AdvertisementRankHistory.rank_date == today - timedelta(days=2)
-        ).order_by(desc(AdvertisementRankHistory.created_at)).first()
-        if rank_2:
-            rank_2days_ago = rank_2.rank
-        
-        # 7일전 순위
-        rank_7 = db.query(AdvertisementRankHistory).filter(
-            AdvertisementRankHistory.ad_id == ad.ad_id,
-            AdvertisementRankHistory.rank_date == today - timedelta(days=7)
-        ).order_by(desc(AdvertisementRankHistory.created_at)).first()
-        if rank_7:
-            rank_7days_ago = rank_7.rank
+        if key_1day in rank_history_map:
+            rank_1day_ago = rank_history_map[key_1day].rank
+        if key_2days in rank_history_map:
+            rank_2days_ago = rank_history_map[key_2days].rank
+        if key_7days in rank_history_map:
+            rank_7days_ago = rank_history_map[key_7days].rank
         
         advertisement_list.append({
             "ad_id": ad.ad_id,
@@ -454,18 +473,29 @@ async def get_advertisements(
             "created_at": ad.created_at.isoformat() if ad.created_at else None
         })
     
-    # 상태별 통계 계산 (권한 범위 내에서만)
+    # 상태별 통계 계산 (권한 범위 내에서만) - 한 번의 쿼리로 최적화
     stats_query = db.query(AdvertisementsAdmin).join(
         UsersAdmin, AdvertisementsAdmin.user_id == UsersAdmin.user_id
     )
     stats_query = _apply_advertisement_permission_filter(stats_query, current_user, db)
     
-    total_count = stats_query.count()
-    normal_count = stats_query.filter(AdvertisementsAdmin.status == "normal").count()
-    error_count = stats_query.filter(AdvertisementsAdmin.status == "error").count()
-    pending_count = stats_query.filter(AdvertisementsAdmin.status == "pending").count()
-    ending_count = stats_query.filter(AdvertisementsAdmin.status == "ending").count()
-    ended_count = stats_query.filter(AdvertisementsAdmin.status == "ended").count()
+    # 한 번의 쿼리로 모든 상태별 개수 계산 (CASE WHEN 사용)
+    from sqlalchemy import case
+    stats_result = stats_query.with_entities(
+        func.count(AdvertisementsAdmin.ad_id).label('total'),
+        func.sum(case((AdvertisementsAdmin.status == "normal", 1), else_=0)).label('normal'),
+        func.sum(case((AdvertisementsAdmin.status == "error", 1), else_=0)).label('error'),
+        func.sum(case((AdvertisementsAdmin.status == "pending", 1), else_=0)).label('pending'),
+        func.sum(case((AdvertisementsAdmin.status == "ending", 1), else_=0)).label('ending'),
+        func.sum(case((AdvertisementsAdmin.status == "ended", 1), else_=0)).label('ended')
+    ).first()
+    
+    total_count = stats_result.total or 0
+    normal_count = stats_result.normal or 0
+    error_count = stats_result.error or 0
+    pending_count = stats_result.pending or 0
+    ending_count = stats_result.ending or 0
+    ended_count = stats_result.ended or 0
     
     total_pages = (total + limit - 1) // limit if total > 0 else 1
     
@@ -767,79 +797,53 @@ async def get_advertisement_rank_history(
     if product_update_datetime:
         # 변경 전: 이전 상품명과 일치하는 이력 (created_at < 변경시점)
         # 변경 후: 현재 상품명과 일치하는 이력 (created_at >= 변경시점)
-        from sqlalchemy import or_
+        # MS SQL Server는 REGEXP_REPLACE를 지원하지 않으므로 Python에서 필터링
+        # 먼저 날짜 조건만으로 조회
+        all_history = rank_history_query.all()
         
-        conditions = []
+        rank_history = []
         
         # 변경 전 이력 (이전 상품명과 일치)
         if old_product_name:
             cleaned_old_product_name = remove_html_tags(old_product_name)
-            
-            # MySQL의 REGEXP_REPLACE를 사용하여 HTML 태그 제거 후 비교
-            conditions.append(
-                and_(
-                    AdvertisementRankHistory.created_at < product_update_datetime,
-                    func.TRIM(
-                        func.REGEXP_REPLACE(
-                            func.REGEXP_REPLACE(
-                                AdvertisementRankHistory.product_name,
-                                r'<[^>]+>',
-                                ''
-                            ),
-                            r'\\s+',
-                            ' '
-                        )
-                    ) == cleaned_old_product_name
-                )
-            )
+            for record in all_history:
+                if record.created_at and record.created_at < product_update_datetime:
+                    cleaned_history_name = remove_html_tags(record.product_name or "")
+                    if cleaned_history_name == cleaned_old_product_name:
+                        rank_history.append(record)
         elif old_product_name is None:
             # 이전 상품명이 없었던 경우 (None 또는 빈 문자열)
-            conditions.append(
-                and_(
-                    AdvertisementRankHistory.created_at < product_update_datetime,
-                    or_(
-                        AdvertisementRankHistory.product_name.is_(None),
-                        AdvertisementRankHistory.product_name == ""
-                    )
-                )
-            )
+            for record in all_history:
+                if record.created_at and record.created_at < product_update_datetime:
+                    if not record.product_name or record.product_name.strip() == "":
+                        rank_history.append(record)
         
         # 변경 후 이력 (현재 상품명과 일치)
         current_product_name = ad.product_name.strip() if ad.product_name and ad.product_name.strip() else None
         if current_product_name:
             cleaned_current_product_name = remove_html_tags(current_product_name)
-            
-            # MySQL의 REGEXP_REPLACE를 사용하여 HTML 태그 제거 후 비교
-            conditions.append(
-                and_(
-                    AdvertisementRankHistory.created_at >= product_update_datetime,
-                    func.TRIM(
-                        func.REGEXP_REPLACE(
-                            func.REGEXP_REPLACE(
-                                AdvertisementRankHistory.product_name,
-                                r'<[^>]+>',
-                                ''
-                            ),
-                            r'\\s+',
-                            ' '
-                        )
-                    ) == cleaned_current_product_name
-                )
-            )
+            for record in all_history:
+                if record.created_at and record.created_at >= product_update_datetime:
+                    cleaned_history_name = remove_html_tags(record.product_name or "")
+                    if cleaned_history_name == cleaned_current_product_name:
+                        rank_history.append(record)
         else:
             # 현재 상품명이 없는 경우
-            conditions.append(
-                and_(
-                    AdvertisementRankHistory.created_at >= product_update_datetime,
-                    or_(
-                        AdvertisementRankHistory.product_name.is_(None),
-                        AdvertisementRankHistory.product_name == ""
-                    )
-                )
-            )
+            for record in all_history:
+                if record.created_at and record.created_at >= product_update_datetime:
+                    if not record.product_name or record.product_name.strip() == "":
+                        rank_history.append(record)
         
-        if conditions:
-            rank_history_query = rank_history_query.filter(or_(*conditions))
+        # 중복 제거 및 정렬
+        seen_ids = set()
+        unique_history = []
+        for record in rank_history:
+            if record.rank_id not in seen_ids:
+                seen_ids.add(record.rank_id)
+                unique_history.append(record)
+        
+        rank_history = sorted(unique_history, key=lambda x: (x.rank_date, x.created_at or datetime(1900, 1, 1)), reverse=True)
+        rank_history_query = None  # 쿼리 실행 방지
     else:
         # 상품명이 변경되지 않은 경우: 현재 상품명과 일치하는 이력만 조회
         rank_history = None  # 초기화
@@ -847,38 +851,21 @@ async def get_advertisement_rank_history(
             # 현재 광고의 상품명에서 HTML 태그 제거
             cleaned_product_name = remove_html_tags(ad.product_name.strip())
             
-            # MySQL의 REGEXP_REPLACE를 사용하여 HTML 태그 제거 후 비교
-            # MySQL 8.0+ 또는 MariaDB 10.0.5+에서 지원
-            try:
-                # REGEXP_REPLACE로 HTML 태그 제거 후 비교
-                rank_history_query = rank_history_query.filter(
-                    func.TRIM(
-                        func.REGEXP_REPLACE(
-                            func.REGEXP_REPLACE(
-                                AdvertisementRankHistory.product_name,
-                                r'<[^>]+>',
-                                ''
-                            ),
-                            r'\\s+',
-                            ' '
-                        )
-                    ) == cleaned_product_name
-                )
-            except Exception as e:
-                # REGEXP_REPLACE가 지원되지 않는 경우: Python에서 필터링
-                # 모든 결과를 가져온 후 Python에서 필터링
-                all_rank_history = rank_history_query.all()
-                rank_history = []
-                for rank_record in all_rank_history:
-                    cleaned_history_name = remove_html_tags(rank_record.product_name or "")
-                    if cleaned_history_name == cleaned_product_name:
-                        rank_history.append(rank_record)
-                # rank_history는 이미 필터링된 리스트이므로 정렬 후 반환
-                rank_history = sorted(rank_history, key=lambda x: (x.rank_date, x.created_at or datetime(1900, 1, 1)), reverse=True)
-                # rank_history_query를 None으로 설정하여 아래 쿼리 실행 방지
-                rank_history_query = None
+            # MS SQL Server는 REGEXP_REPLACE를 지원하지 않으므로 Python에서 필터링
+            # 모든 결과를 가져온 후 Python에서 필터링
+            all_rank_history = rank_history_query.all()
+            rank_history = []
+            for rank_record in all_rank_history:
+                cleaned_history_name = remove_html_tags(rank_record.product_name or "")
+                if cleaned_history_name == cleaned_product_name:
+                    rank_history.append(rank_record)
+            # rank_history는 이미 필터링된 리스트이므로 정렬 후 반환
+            rank_history = sorted(rank_history, key=lambda x: (x.rank_date, x.created_at or datetime(1900, 1, 1)), reverse=True)
+            # rank_history_query를 None으로 설정하여 아래 쿼리 실행 방지
+            rank_history_query = None
         else:
             # 상품명이 없는 경우: product_name이 None이거나 빈 문자열인 이력만
+            from sqlalchemy import or_
             rank_history_query = rank_history_query.filter(
                 or_(
                     AdvertisementRankHistory.product_name.is_(None),

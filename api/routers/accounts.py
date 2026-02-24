@@ -490,13 +490,12 @@ async def create_account(
             # 총판사는 parent_user_id가 None이어야 함
             final_parent_user_id = None
         else:
-            # 대행사나 광고주는 관리자의 user_id를 parent_user_id로 설정
-            if actual_user:
-                final_parent_user_id = actual_user_id
-            else:
-                # 관리자 계정이 users_admin에 없으면 요청에서 온 값 사용 (없으면 None)
-                if not final_parent_user_id:
-                    final_parent_user_id = None
+            # 대행사나 광고주는 관리자의 user_id(6)를 parent_user_id로 설정
+            # 관리자 user_id는 6으로 고정
+            ADMIN_USER_ID = 6
+            if not final_parent_user_id:
+                # 요청에 parent_user_id가 없으면 관리자 user_id(6)로 설정
+                final_parent_user_id = ADMIN_USER_ID
     else:
         # 일반 사용자가 계정을 생성할 때
         if account.role == "total":
