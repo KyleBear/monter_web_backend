@@ -83,6 +83,23 @@ async def root():
     }
 
 
+@app.on_event("startup")
+async def startup_event():
+    """
+    서버 시작 시 실행되는 이벤트
+    """
+    logger.info("서버 시작 중...")
+    
+    # 리다이렉트 URL 캐시 백그라운드 초기화 (블로킹하지 않음)
+    try:
+        from api.routers.rewards_link import initialize_redirect_url_cache_async
+        initialize_redirect_url_cache_async()
+    except Exception as e:
+        logger.error(f"URL 캐시 초기화 중 오류: {e}", exc_info=True)
+    
+    logger.info("서버 시작 완료 (URL 캐시는 백그라운드에서 초기화 중)")
+
+
 @app.get("/health")
 async def health_check():
     """헬스 체크 엔드포인트"""
@@ -104,55 +121,21 @@ async def public_redirect(
     t1 = time.time()
     
     try:
-        from models import RewardLinkKeyword
-        from api.routers.rewards_link import generate_acq_from_random_table, generate_random_ackey, get_cached_keywords
+        # 미리 생성된 URL 캐시에서 랜덤 선택 (지연 초기화 포함)
+        from api.routers.rewards_link import get_cached_redirect_url
+        naver_url = get_cached_redirect_url(short_code, db)
         
-        # 1. 키워드 조회 (캐시 사용)
-        keywords = get_cached_keywords(short_code, db)
         t2 = time.time()
         
-        if not keywords:
+        if not naver_url:
             raise HTTPException(
                 status_code=404,
-                detail=f"키워드를 찾을 수 없습니다: {short_code}"
+                detail=f"리다이렉트 URL을 생성할 수 없습니다: {short_code}"
             )
         
-        # 랜덤으로 하나의 키워드 선택
-        random_keyword = random.choice(keywords)
-        query_keyword = random_keyword.query_keyword
-        
-        # random_acq 테이블에서 acq 생성 (캐시 사용)
-        acq = generate_acq_from_random_table(db)
-        t3 = time.time()
-        
-        # random_ackey_acq 테이블에서 ackey 가져오기 (캐시 사용)
-        from api.routers.rewards_link import get_random_ackey_from_table
-        ackey = get_random_ackey_from_table(db)
-        
-        # ackey가 없으면 랜덤 생성 (fallback)
-        if not ackey:
-            ackey = generate_random_ackey(8)
-            logger.debug("random_ackey_acq 테이블에서 ackey를 가져오지 못해 랜덤 생성")
-        
-        # 새로운 search_url 생성
-        acr = random.randint(1, 10)
-        
-        naver_url = (
-            f"https://m.search.naver.com/search.naver?"
-            f"sm=mtp_sug.top&"
-            f"where=m&"
-            f"query={query_keyword}&"
-            f"ackey={ackey}&"
-            f"acq={acq}&"
-            f"acr={acr}&"
-            f"qdt=0"
-        )
-        
-        t4 = time.time()
         # 성능 로그는 DEBUG 레벨로 변경 (샘플링: 1%만 로깅)
         if random.random() < 0.01:  # 1% 샘플링
-            logger.debug(f"[공개 리다이렉트 성능] 키워드 조회: {(t2-t1)*1000:.2f}ms, ACQ 생성: {(t3-t2)*1000:.2f}ms, URL 생성: {(t4-t3)*1000:.2f}ms, 전체: {(t4-t1)*1000:.2f}ms")
-            logger.debug(f"[공개 리다이렉트] short_code={short_code}, keyword_id={random_keyword.keyword_id}, query='{query_keyword}', acq='{acq}', URL: {naver_url[:150]}...")
+            logger.debug(f"[공개 리다이렉트 성능] 전체: {(t2-t1)*1000:.2f}ms, short_code={short_code}")
         
         # 리다이렉트
         return RedirectResponse(url=naver_url, status_code=302)

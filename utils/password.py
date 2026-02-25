@@ -3,6 +3,9 @@
 """
 import hashlib
 import secrets
+import logging
+
+logger = logging.getLogger(__name__)
 
 # ========== 옵션 1: AES 암호화 (복호화 가능) - 주석 처리 ==========
 # from cryptography.fernet import Fernet
@@ -44,7 +47,14 @@ def verify_password(password: str, password_hash: str) -> bool:
     """
     비밀번호 검증 (평문 비교)
     """
-    return password == password_hash
+    if not password or not password_hash:
+        logger.warning(f"[비밀번호 검증 실패] 빈 값 - password={'*' if password else None}, password_hash={'*' if password_hash else None}")
+        return False
+    
+    result = password == password_hash
+    if not result:
+        logger.debug(f"[비밀번호 검증 실패] 불일치 - password_length={len(password)}, hash_length={len(password_hash)}")
+    return result
 
 # ========== 기존 해시화 함수 (주석 처리) ==========
 # def hash_password(password: str) -> str:

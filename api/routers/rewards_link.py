@@ -48,6 +48,12 @@ _ackey_cache = {
     'lock': threading.Lock()
 }
 
+# ✅ 리다이렉트 URL 캐시 (short_code별, 서버 시작 시 미리 생성)
+_redirect_url_cache = {
+    'urls': {},  # {short_code: [url1, url2, ...]}
+    'lock': threading.Lock()
+}
+
 # ✅ 키워드 조회 캐시 (short_code별, 5분 TTL)
 _keywords_cache = {
     'data': {},  # {short_code: [keywords_list]}
@@ -126,6 +132,9 @@ def update_keywords_cache(short_code: str, db: Session):
             # 오류 시 빈 리스트로 설정
             _keywords_cache['data'][short_code] = []
             _keywords_cache['last_update'][short_code] = time.time()
+    
+    # 리다이렉트 URL 캐시도 삭제 (업데이트 시 재생성 필요)
+    clear_redirect_url_cache(short_code)
 
 
 def _get_cached_random_acq_data(db: Session) -> Tuple[list, list]:
@@ -378,6 +387,194 @@ def _get_cached_ackey_list(db: Session) -> List[str]:
     return _ackey_cache['ackey_list']
 
 
+# ==================== 주석 처리된 함수 (이전 URL 생성 방식) ====================
+# 아래 함수들은 DB의 reward_link를 직접 사용하도록 변경되어 사용하지 않음
+# 참고용으로 주석 처리하여 보관
+
+# def _generate_naver_url(query_keyword: str, ackey: str, acq: str, acr: int) -> str:
+#     """네이버 URL 생성 헬퍼 함수"""
+#     return (
+#         f"https://m.search.naver.com/search.naver?"
+#         f"sm=mtp_sug.top&"
+#         f"where=m&"
+#         f"query={query_keyword}&"
+#         f"ackey={ackey}&"
+#         f"acq={acq}&"
+#         f"acr={acr}&"
+#         f"qdt=0"
+#     )
+#
+#
+# def _pre_generate_redirect_urls(short_code: str, keywords: List[RewardLinkKeyword], db: Session) -> List[str]:
+#     """
+#     short_code에 대한 리다이렉트 URL을 미리 생성
+#     각 키워드마다 여러 조합의 URL 생성
+#     """
+#     urls = []
+#     
+#     # 캐시된 데이터 가져오기
+#     acq_words, adj_words = _get_cached_random_acq_data(db)
+#     ackey_list = _get_cached_ackey_list(db)
+#     
+#     if not acq_words or not adj_words:
+#         logger.warning(f"[URL 캐시] acq 데이터가 없습니다. short_code={short_code}")
+#         return []
+#     
+#     # 각 키워드마다 여러 URL 생성
+#     for keyword in keywords:
+#         query_keyword = keyword.query_keyword
+#         if not query_keyword:
+#             continue
+#         
+#         # 각 키워드마다 20-50개의 URL 생성 (다양한 조합)
+#         num_urls_per_keyword = random.randint(20, 50)
+#         
+#         for _ in range(num_urls_per_keyword):
+#             # acq 랜덤 선택
+#             selected_acq_word = random.choice(acq_words)
+#             selected_adj_word = random.choice(adj_words)
+#             acq = f"{selected_acq_word}{selected_adj_word}"
+#             
+#             # ackey 랜덤 선택 (있으면)
+#             if ackey_list:
+#                 ackey = random.choice(ackey_list)
+#             else:
+#                 ackey = generate_random_ackey(8)
+#             
+#             # acr 랜덤 선택
+#             acr = random.randint(1, 10)
+#             
+#             # URL 생성
+#             url = _generate_naver_url(query_keyword, ackey, acq, acr)
+#             urls.append(url)
+#     
+#     return urls
+# ==================== 주석 처리된 함수 끝 ====================
+
+
+def initialize_redirect_url_cache(db: Session = None):
+    """
+    서버 시작 시 모든 short_code에 대한 리다이렉트 URL을 DB에서 조회하여 캐싱
+    RewardLink 테이블의 reward_link 컬럼을 그대로 사용
+    """
+    if db is None:
+        db = SessionLocal()
+    
+    try:
+        logger.info("[URL 캐시] 서버 시작 시 URL 캐시 초기화 시작...")
+        
+        # 모든 고유한 short_code 조회
+        distinct_short_codes = db.query(RewardLink.short_code).filter(
+            RewardLink.short_code.isnot(None),
+            RewardLink.short_code != '',
+            RewardLink.reward_link.isnot(None),
+            RewardLink.reward_link != ''
+        ).distinct().all()
+        
+        short_code_list = [sc[0] for sc in distinct_short_codes]
+        logger.info(f"[URL 캐시] 총 {len(short_code_list)}개의 short_code 발견")
+        
+        # 각 short_code에 대해 reward_link 조회
+        total_urls = 0
+        for idx, short_code in enumerate(short_code_list, 1):
+            try:
+                # DB에서 reward_link 조회
+                links = db.query(RewardLink.reward_link).filter(
+                    RewardLink.short_code == short_code,
+                    RewardLink.reward_link.isnot(None),
+                    RewardLink.reward_link != ''
+                ).all()
+                
+                if not links:
+                    continue
+                
+                # reward_link 리스트 추출
+                urls = [link[0] for link in links if link[0]]
+                
+                if urls:
+                    with _redirect_url_cache['lock']:
+                        _redirect_url_cache['urls'][short_code] = urls
+                    total_urls += len(urls)
+                    if idx % 10 == 0 or idx == len(short_code_list):
+                        logger.info(f"[URL 캐시] 진행 중: [{idx}/{len(short_code_list)}] short_code 처리 완료, 현재 총 {total_urls}개 URL 캐시")
+            
+            except Exception as e:
+                logger.error(f"[URL 캐시] short_code={short_code} URL 캐시 중 오류: {e}", exc_info=True)
+                continue
+        
+        logger.info(f"[URL 캐시] 초기화 완료: {len(short_code_list)}개 short_code, 총 {total_urls}개 URL 캐시")
+    
+    except Exception as e:
+        logger.error(f"[URL 캐시] 초기화 중 오류: {e}", exc_info=True)
+    finally:
+        if db is not None and db != SessionLocal():
+            db.close()
+
+
+def initialize_redirect_url_cache_async(db: Session = None):
+    """
+    백그라운드 스레드에서 비동기로 URL 캐시 초기화
+    서버 시작을 블로킹하지 않음
+    """
+    def _init_in_background():
+        try:
+            time.sleep(2)  # 서버 완전 시작 후 2초 대기
+            initialize_redirect_url_cache(db)
+        except Exception as e:
+            logger.error(f"[URL 캐시] 백그라운드 초기화 중 오류: {e}", exc_info=True)
+    
+    thread = threading.Thread(target=_init_in_background, daemon=True)
+    thread.start()
+    logger.info("[URL 캐시] 백그라운드 초기화 시작됨 (서버 시작은 계속 진행)")
+
+
+def clear_redirect_url_cache(short_code: str):
+    """
+    특정 short_code의 리다이렉트 URL 캐시 삭제
+    업데이트/삭제 시 호출
+    """
+    with _redirect_url_cache['lock']:
+        if short_code in _redirect_url_cache['urls']:
+            del _redirect_url_cache['urls'][short_code]
+            logger.debug(f"[URL 캐시] 삭제 완료: short_code={short_code}")
+
+
+def get_cached_redirect_url(short_code: str, db: Session) -> Optional[str]:
+    """
+    캐시된 리다이렉트 URL 반환 (short_code별, DB의 reward_link를 캐싱)
+    캐시에 없으면 DB에서 조회하여 캐싱 (지연 초기화)
+    """
+    # ✅ 캐시에서 확인
+    with _redirect_url_cache['lock']:
+        if short_code in _redirect_url_cache['urls']:
+            url_list = _redirect_url_cache['urls'][short_code]
+            if url_list:
+                return random.choice(url_list)
+    
+    # ✅ 캐시에 없으면 DB에서 조회 (지연 초기화)
+    logger.debug(f"[URL 캐시] 지연 초기화: short_code={short_code}")
+    
+    links = db.query(RewardLink.reward_link).filter(
+        RewardLink.short_code == short_code,
+        RewardLink.reward_link.isnot(None),
+        RewardLink.reward_link != ''
+    ).all()
+    
+    if not links:
+        return None
+    
+    urls = [link[0] for link in links if link[0]]
+    if not urls:
+        return None
+    
+    # 캐시에 저장
+    with _redirect_url_cache['lock']:
+        _redirect_url_cache['urls'][short_code] = urls
+    
+    logger.debug(f"[URL 캐시] 생성 완료: short_code={short_code}, URL 수={len(urls)}")
+    return random.choice(urls)
+
+
 def get_random_ackey_from_table(db: Session) -> Optional[str]:
     """
     random_ackey_acq 테이블에서 전체 레코드 중 랜덤으로 ackey 가져오기
@@ -532,57 +729,25 @@ async def redirect_to_naver(
 ):
     """
     짧은 링크로 접속 시 랜덤 네이버 URL로 리다이렉트
-    short_code에 해당하는 RewardLinkKeyword에서 query_keyword를 랜덤으로 선택하여
-    새로운 search_url을 생성하여 리다이렉트
+    미리 생성된 URL 캐시에서 랜덤으로 선택하여 리다이렉트
     """
     t1 = time.time()
     
     try:
-        # 1. 키워드 조회 (캐시 사용)
-        keywords = get_cached_keywords(short_code, db)
+        # 미리 생성된 URL 캐시에서 랜덤 선택 (지연 초기화 포함)
+        naver_url = get_cached_redirect_url(short_code, db)
         
         t2 = time.time()
         
-        if not keywords:
+        if not naver_url:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"키워드를 찾을 수 없습니다: {short_code}"
+                detail=f"리다이렉트 URL을 생성할 수 없습니다: {short_code}"
             )
         
-        # 랜덤으로 하나의 키워드 선택
-        random_keyword = random.choice(keywords)
-        query_keyword = random_keyword.query_keyword
-        
-        # 2. ACQ 생성 (캐시 사용)
-        acq = generate_acq_from_random_table(db)
-        t3 = time.time()
-        
-        # 3. ACKEY 생성 (캐시 사용)
-        ackey = get_random_ackey_from_table(db)
-        
-        # ackey가 없으면 랜덤 생성 (fallback)
-        if not ackey:
-            ackey = generate_random_ackey(8)
-            logger.debug("random_ackey_acq 테이블에서 ackey를 가져오지 못해 랜덤 생성")
-        
-        acr = random.randint(1, 10)
-        
-        naver_url = (
-            f"https://m.search.naver.com/search.naver?"
-            f"sm=mtp_sug.top&"
-            f"where=m&"
-            f"query={query_keyword}&"
-            f"ackey={ackey}&"
-            f"acq={acq}&"
-            f"acr={acr}&"
-            f"qdt=0"
-        )
-        
-        t4 = time.time()
         # 성능 로그는 DEBUG 레벨로 변경 (샘플링: 1%만 로깅)
         if random.random() < 0.01:  # 1% 샘플링
-            logger.debug(f"[리다이렉트 성능] 키워드 조회: {(t2-t1)*1000:.2f}ms, ACQ 생성: {(t3-t2)*1000:.2f}ms, URL 생성: {(t4-t3)*1000:.2f}ms, 전체: {(t4-t1)*1000:.2f}ms")
-            logger.debug(f"[리다이렉트] short_code={short_code}, keyword_id={random_keyword.keyword_id}, query='{query_keyword}', URL: {naver_url[:100]}...")
+            logger.debug(f"[리다이렉트 성능] 전체: {(t2-t1)*1000:.2f}ms, short_code={short_code}")
         
         # 리다이렉트
         return RedirectResponse(url=naver_url, status_code=302)

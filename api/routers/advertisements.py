@@ -392,8 +392,8 @@ async def get_advertisements(
     # 전체 개수 조회
     total = query.count()
     
-    # 페이지네이션 적용
-    results = query.offset(offset).limit(limit).all()
+    # 페이지네이션 적용 (등록일자 기준 내림차순 정렬 - 최신순)
+    results = query.order_by(desc(AdvertisementsAdmin.created_at)).offset(offset).limit(limit).all()
     
     # 광고 ID 목록 추출 (순위 이력 일괄 조회용)
     ad_ids = [ad.ad_id for ad, user in results]
@@ -2020,6 +2020,7 @@ async def delete_advertisements(
     deleted_count = 0
     not_found_ids = []
     unauthorized_ids = []
+    failed_ads = []  # 환불 실패한 광고 목록
     
     try:
         for ad_id in delete_request.ad_ids:
@@ -2037,15 +2038,24 @@ async def delete_advertisements(
             
                 # 광고주 정보 조회
                 user = db.query(UsersAdmin).filter(UsersAdmin.user_id == ad.user_id).first()
-                if user:
-                    # 작업 수행자 ID (실제로 삭제한 유저)
-                    current_username = current_user.get("username")
-                    performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
-                    performed_by_user_id = performed_by_user.user_id if performed_by_user else None
-                    performed_by_role = performed_by_user.role if performed_by_user else None
-                    
+                
+                # 작업 수행자 ID (실제로 삭제한 유저) - user가 None이어도 설정
+                current_username = current_user.get("username")
+                performed_by_user = db.query(UsersAdmin).filter(UsersAdmin.username == current_username).first()
+                performed_by_user_id = performed_by_user.user_id if performed_by_user else None
+                performed_by_role = performed_by_user.role if performed_by_user else None
+                
                 # 작업 수행자의 role에 따라 advertiser_user_id와 agency_user_id 결정
-                if performed_by_role == "agency":
+                if current_username in ["admin", "monteur"]:
+                    # 관리자가 삭제한 경우
+                    if user and user.role == "advertiser":
+                        agency_user_id = user.parent_user_id  # 광고주의 대행사
+                        advertiser_user_id = ad.user_id  # 광고 소유자
+                    else:
+                        # 광고주가 대행사나 총판사이거나 user가 None인 경우
+                        agency_user_id = None
+                        advertiser_user_id = ad.user_id
+                elif performed_by_role == "agency":
                     # 대행사가 삭제한 경우
                     agency_user_id = performed_by_user_id  # 작업 수행자
                     advertiser_user_id = ad.user_id  # 광고 소유자
@@ -2058,9 +2068,13 @@ async def delete_advertisements(
                         agency_user_id = None
                         advertiser_user_id = ad.user_id
                 else:
-                    # 관리자나 기타
-                    agency_user_id = user.parent_user_id if user.role == "advertiser" else None
-                    advertiser_user_id = ad.user_id
+                    # 기타 (user가 None일 수 있음)
+                    if user and user.role == "advertiser":
+                        agency_user_id = user.parent_user_id
+                        advertiser_user_id = ad.user_id
+                    else:
+                        agency_user_id = None
+                        advertiser_user_id = ad.user_id
                 
                 # 삭제 로그 생성 (settlement_type='refund')
                 # 이미 종료된 경우 환불 불가
@@ -2070,15 +2084,28 @@ async def delete_advertisements(
                     continue
                 
                 # 남은 일수 계산 (광고 시작일부터 종료일까지)
+                # 오늘이 광고 기간 내에 있다면, 오늘 하루는 사용한 것으로 간주하고 환불에서 제외
                 remaining_days = 0
                 
                 if ad.end_date and ad.start_date:
-                    # period_start는 오늘과 광고 시작일 중 늦은 것 (실제 환불 기간 시작일)
-                    period_start = max(today, ad.start_date)
                     period_end = ad.end_date
                     
-                    # 실제 광고 진행 기간 계산 (시작일부터 종료일까지)
-                    remaining_days = (period_end - period_start).days + 1  # 종료일 포함
+                    # 오늘이 광고 기간 내에 있는지 확인
+                    if ad.start_date <= today <= ad.end_date:
+                        # 오늘은 사용한 것으로 간주, 내일부터 환불
+                        period_start = today + timedelta(days=1)  # 내일부터 환불 시작
+                        
+                        # 내일이 종료일보다 늦으면 환불 일수는 0
+                        if period_start > period_end:
+                            remaining_days = 0
+                        else:
+                            remaining_days = (period_end - period_start).days + 1  # 종료일 포함
+                    else:
+                        # 오늘이 광고 기간 밖에 있으면 기존 로직 사용
+                        # period_start는 오늘과 광고 시작일 중 늦은 것 (실제 환불 기간 시작일)
+                        period_start = max(today, ad.start_date)
+                        # 실제 광고 진행 기간 계산 (시작일부터 종료일까지)
+                        remaining_days = (period_end - period_start).days + 1  # 종료일 포함
                 else:
                     period_start = None
                     period_end = None
@@ -2165,6 +2192,8 @@ async def delete_advertisements(
         message_parts.append(f"{len(not_found_ids)}개 광고를 찾을 수 없습니다.")
     if unauthorized_ids:
         message_parts.append(f"{len(unauthorized_ids)}개 광고는 삭제 권한이 없습니다.")
+    if failed_ads:
+        message_parts.append(f"{len(failed_ads)}개 광고는 환불 처리에 실패했습니다.")
     
     return {
         "success": True,
@@ -2172,7 +2201,8 @@ async def delete_advertisements(
         "data": {
             "deleted_count": deleted_count,
             "not_found_ids": not_found_ids,
-            "unauthorized_ids": unauthorized_ids
+            "unauthorized_ids": unauthorized_ids,
+            "failed_ads": failed_ads
         }
     }
 
