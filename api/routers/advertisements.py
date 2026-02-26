@@ -2095,8 +2095,8 @@ async def delete_advertisements(
                         # 오늘은 사용한 것으로 간주, 내일부터 환불
                         period_start = today + timedelta(days=1)  # 내일부터 환불 시작
                         
-                        # 내일이 종료일보다 늦으면 환불 일수는 0
-                        if period_start > period_end:
+                        # 내일이 종료일보다 늦거나 같으면 환불 일수는 0
+                        if period_start >= period_end:
                             remaining_days = 0
                         else:
                             remaining_days = (period_end - period_start).days + 1  # 종료일 포함
