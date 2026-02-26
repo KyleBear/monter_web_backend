@@ -129,8 +129,6 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
             detail="사용자 ID를 가져올 수 없습니다."
         )
 
-    # 세션 토큰 생성
-    session_token = create_session(user_id, username, role, remember_me)
     # 세션 토큰 생성 (DB에 저장)
     session_token = create_session(user_id, username, role, remember_me, db=db)
 
@@ -164,7 +162,6 @@ async def logout(
         )
 
     token = credentials.credentials
-    deleted = delete_session(token)
     deleted = delete_session(token, db=db)
 
     if not deleted:
@@ -194,7 +191,6 @@ async def verify_session(
         )
 
     token = credentials.credentials
-    session = get_session(token)
     session = get_session(token, db=db)
 
     if not session:
@@ -219,4 +215,3 @@ async def verify_session(
             "role": session["role"]
         }
     }
-~
